@@ -168,8 +168,8 @@ setup_cmd() {
   current_model="$(get_env_value OPENAI_MODEL)"
   current_port="$(get_env_value PORT)"
 
-  [ -z "$current_base" ] && current_base="https://api.deepseek.com/v1"
-  [ -z "$current_model" ] && current_model="deepseek-chat"
+  [ -z "$current_base" ] && current_base="https://api.openai.com/v1"
+  [ -z "$current_model" ] && current_model="gpt-4.1-mini"
   [ -z "$current_port" ] && current_port="3000"
 
   local input
