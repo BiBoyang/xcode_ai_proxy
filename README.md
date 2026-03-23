@@ -83,6 +83,15 @@ export PATH="$HOME/.local/bin:$PATH"
 xcodeaiproxy setup
 ```
 
+你会看到类似下面的提示（`当前值` 是你正在使用的值，`示例` 仅供参考）：
+
+```text
+OPENAI_BASE_URL（OpenAI 兼容接口地址）
+当前值: https://api.deepseek.com/v1
+示例:   https://api.openai.com/v1
+请输入新值（回车保留当前值）:
+```
+
 2. 后台启动（默认端口 3000）
 
 ```bash
@@ -121,6 +130,7 @@ PORT=3020 xcodeaiproxy-stop
 ## 配置说明
 
 - 推荐使用 `xcodeaiproxy setup` 进行交互式配置（会写入项目根目录 `.env`）
+- `setup` 交互里会明确区分 `当前值` 与 `示例`，避免误读
 - `OPENAI_BASE_URL` 必须以 `http://` 或 `https://` 开头，且不能包含空格
 - `OPENAI_API_KEY` 不能为空、不能有空格、长度至少 8
 - `OPENAI_MODEL` 只允许字母、数字和 `._:/-` 字符
