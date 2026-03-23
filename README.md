@@ -1,6 +1,8 @@
 # Xcode AI Proxy Rust
 
-Rust 版本的 Xcode AI 本地代理，功能对齐 Python 版并支持一键命令行操作。
+ Xcode AI 本地代理，支持一键命令行操作。
+ 
+ 使用 Rust 编写.
 
 ## 特性
 
