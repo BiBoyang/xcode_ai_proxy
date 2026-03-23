@@ -89,6 +89,14 @@ PORT=3020 xcodeaiproxy
 PORT=3020 xcodeaiproxy-stop
 ```
 
+## 后台运行行为
+
+- `xcodeaiproxy` 默认以后台方式启动（`nohup`），关闭当前终端后进程仍会继续运行
+- 服务会持续运行，直到你主动停止、进程异常退出，或机器重启
+- 默认不是系统服务：不会开机自启，也不会自动拉起
+- 运行状态检查：`xcodeaiproxy status`
+- 停止服务：`xcodeaiproxy-stop` 或 `xcodeaiproxy stop`
+
 ## Xcode 配置
 
 - Base URL: `http://localhost:3000`（如改端口请同步修改）
