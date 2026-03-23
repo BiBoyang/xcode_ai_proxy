@@ -208,22 +208,40 @@ setup_cmd() {
   ensure_env_file
 
   local current_base current_key current_model current_port
+  local default_base default_model default_port
   current_base="$(get_env_value OPENAI_BASE_URL)"
   current_key="$(get_env_value OPENAI_API_KEY)"
   current_model="$(get_env_value OPENAI_MODEL)"
   current_port="$(get_env_value PORT)"
 
-  [ -z "$current_base" ] && current_base="https://api.openai.com/v1"
-  [ -z "$current_model" ] && current_model="gpt-4.1-mini"
-  [ -z "$current_port" ] && current_port="3000"
+  default_base="https://api.openai.com/v1"
+  default_model="gpt-4.1-mini"
+  default_port="3000"
 
   local input
 
   echo "=== xcodeaiproxy setup ==="
   while true; do
-    read -r -p "OPENAI_BASE_URL [$current_base]: " input
+    echo
+    echo "OPENAI_BASE_URL（OpenAI 兼容接口地址）"
+    if [ -n "$current_base" ]; then
+      echo "当前值: $current_base"
+      echo "示例:   $default_base"
+      read -r -p "请输入新值（回车保留当前值）: " input
+    else
+      echo "当前值: 未设置"
+      echo "示例:   $default_base"
+      read -r -p "请输入值（回车使用默认值）: " input
+    fi
+
     input="$(trim_value "$input")"
-    [ -z "$input" ] && input="$current_base"
+    if [ -z "$input" ]; then
+      if [ -n "$current_base" ]; then
+        input="$current_base"
+      else
+        input="$default_base"
+      fi
+    fi
 
     if validate_base_url "$input"; then
       current_base="$input"
@@ -236,12 +254,16 @@ setup_cmd() {
   done
 
   while true; do
+    echo
+    echo "OPENAI_API_KEY（上游密钥）"
     if [ -n "$current_key" ]; then
-      read -r -p "OPENAI_API_KEY [已存在，回车保留]: " input
+      echo "当前值: 已设置（已隐藏）"
+      read -r -p "请输入新值（回车保留当前值）: " input
       input="$(trim_value "$input")"
       [ -z "$input" ] && input="$current_key"
     else
-      read -r -p "OPENAI_API_KEY [必填]: " input
+      echo "当前值: 未设置"
+      read -r -p "请输入值（必填）: " input
       input="$(trim_value "$input")"
     fi
 
@@ -255,9 +277,26 @@ setup_cmd() {
   done
 
   while true; do
-    read -r -p "OPENAI_MODEL [$current_model]: " input
+    echo
+    echo "OPENAI_MODEL（调用模型名）"
+    if [ -n "$current_model" ]; then
+      echo "当前值: $current_model"
+      echo "示例:   $default_model"
+      read -r -p "请输入新值（回车保留当前值）: " input
+    else
+      echo "当前值: 未设置"
+      echo "示例:   $default_model"
+      read -r -p "请输入值（回车使用默认值）: " input
+    fi
+
     input="$(trim_value "$input")"
-    [ -z "$input" ] && input="$current_model"
+    if [ -z "$input" ]; then
+      if [ -n "$current_model" ]; then
+        input="$current_model"
+      else
+        input="$default_model"
+      fi
+    fi
 
     if validate_model "$input"; then
       current_model="$input"
@@ -270,9 +309,26 @@ setup_cmd() {
   done
 
   while true; do
-    read -r -p "PORT [默认3000，回车直接使用]: " input
+    echo
+    echo "PORT（本地监听端口）"
+    if [ -n "$current_port" ]; then
+      echo "当前值: $current_port"
+      echo "默认值: $default_port"
+      read -r -p "请输入端口（回车保留当前值）: " input
+    else
+      echo "当前值: 未设置"
+      echo "默认值: $default_port"
+      read -r -p "请输入端口（回车使用默认值）: " input
+    fi
+
     input="$(trim_value "$input")"
-    [ -z "$input" ] && input="3000"
+    if [ -z "$input" ]; then
+      if [ -n "$current_port" ]; then
+        input="$current_port"
+      else
+        input="$default_port"
+      fi
+    fi
 
     if validate_port "$input"; then
       current_port="$input"
