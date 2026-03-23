@@ -77,7 +77,7 @@ export PATH="$HOME/.local/bin:$PATH"
 - `xcodeaiproxy` 或 `xcodeaiproxy start`：后台启动服务（默认端口 3000）
 - `xcodeaiproxy-stop` 或 `xcodeaiproxy stop`：一键停止服务
 - `xcodeaiproxy restart`：重启服务（改配置后常用）
-- `xcodeaiproxy status`：查看服务是否运行
+- `xcodeaiproxy status`：查看运行状态详情（端口、健康检查、PID、日志路径）
 - `xcodeaiproxy logs`：实时查看日志（排错用）
 - `xcodeaiproxy run`：前台运行（调试用，会占用当前终端）
 - `xcodeaiproxy setup`：交互式写入/更新 `.env`

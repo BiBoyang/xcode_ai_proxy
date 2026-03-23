@@ -186,6 +186,11 @@ is_healthy() {
   curl -sS -m 2 "http://127.0.0.1:${port}/health" >/dev/null 2>&1
 }
 
+is_proxy_cmd() {
+  local cmd="$1"
+  [[ "$cmd" == *"xcode-ai-proxy-rust"* ]] || [[ "$cmd" == *"cargo run"* ]]
+}
+
 find_binary() {
   if [ -n "${XCODEAIPROXY_BIN:-}" ] && [ -x "$XCODEAIPROXY_BIN" ]; then
     echo "$XCODEAIPROXY_BIN"
@@ -456,12 +461,100 @@ stop_cmd() {
 status_cmd() {
   ensure_project
   ensure_env_file
-  local port
+  local port healthy status
+  local pid_file_pid pid_file_state
+  local listening_pids proxy_pids
   port="$(resolve_port)"
+
+  healthy=0
   if is_healthy "$port"; then
-    echo "✅ running (port=$port)"
+    healthy=1
+  fi
+
+  listening_pids=""
+  proxy_pids=""
+  if command -v lsof >/dev/null 2>&1; then
+    local pid cmd
+    while IFS= read -r pid; do
+      [ -z "$pid" ] && continue
+
+      if [ -n "$listening_pids" ]; then
+        listening_pids="$listening_pids $pid"
+      else
+        listening_pids="$pid"
+      fi
+
+      cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+      if is_proxy_cmd "$cmd"; then
+        if [ -n "$proxy_pids" ]; then
+          proxy_pids="$proxy_pids $pid"
+        else
+          proxy_pids="$pid"
+        fi
+      fi
+    done < <(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
+  fi
+
+  pid_file_pid=""
+  pid_file_state="missing"
+  if [ -f "$PID_FILE" ]; then
+    pid_file_pid="$(head -n 1 "$PID_FILE" | tr -d '[:space:]')"
+    if [[ "$pid_file_pid" =~ ^[0-9]+$ ]] && kill -0 "$pid_file_pid" 2>/dev/null; then
+      pid_file_state="alive"
+    elif [[ "$pid_file_pid" =~ ^[0-9]+$ ]]; then
+      pid_file_state="stale"
+    else
+      pid_file_state="invalid"
+    fi
+  fi
+
+  status="stopped"
+  if [ "$healthy" -eq 1 ] || [ -n "$proxy_pids" ]; then
+    status="running"
+  fi
+
+  if [ "$status" = "running" ]; then
+    echo "✅ 状态: running"
   else
-    echo "ℹ️ stopped (port=$port)"
+    echo "ℹ️ 状态: stopped"
+  fi
+
+  echo "端口: $port"
+  if [ "$healthy" -eq 1 ]; then
+    echo "健康检查: ok"
+  else
+    echo "健康检查: fail"
+  fi
+  echo "访问地址: http://127.0.0.1:$port"
+
+  if [ -n "$proxy_pids" ]; then
+    echo "代理进程 PID: $proxy_pids"
+  elif [ -n "$listening_pids" ]; then
+    echo "监听进程 PID: $listening_pids (非 xcode-ai-proxy-rust)"
+  else
+    echo "监听进程: 无"
+  fi
+
+  case "$pid_file_state" in
+    alive)
+      echo "PID 文件: $PID_FILE (有效: $pid_file_pid)"
+      ;;
+    stale)
+      echo "PID 文件: $PID_FILE (已失效: $pid_file_pid)"
+      ;;
+    invalid)
+      echo "PID 文件: $PID_FILE (内容无效)"
+      ;;
+    *)
+      echo "PID 文件: $PID_FILE (不存在)"
+      ;;
+  esac
+
+  echo "配置文件: $ENV_FILE"
+  echo "日志文件: $LOG_FILE"
+
+  if [ "$status" = "running" ]; then
+    echo "停止命令: xcodeaiproxy-stop"
   fi
 }
 
