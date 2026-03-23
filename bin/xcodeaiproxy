@@ -95,6 +95,51 @@ get_env_value() {
   ' "$ENV_FILE"
 }
 
+trim_value() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+validate_base_url() {
+  local value="$1"
+  [ -n "$value" ] || return 1
+  if printf '%s' "$value" | grep -q '[[:space:]]'; then
+    return 1
+  fi
+  case "$value" in
+    http://*|https://*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+validate_api_key() {
+  local value="$1"
+  [ -n "$value" ] || return 1
+  if printf '%s' "$value" | grep -q '[[:space:]]'; then
+    return 1
+  fi
+  [ "${#value}" -ge 8 ] || return 1
+  return 0
+}
+
+validate_model() {
+  local value="$1"
+  [ -n "$value" ] || return 1
+  printf '%s' "$value" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._:/-]*$'
+}
+
+validate_port() {
+  local value="$1"
+  printf '%s' "$value" | grep -Eq '^[0-9]+$' || return 1
+  [ "$value" -ge 1 ] && [ "$value" -le 65535 ]
+}
+
 upsert_env_value() {
   local key="$1"
   local value="$2"
@@ -175,17 +220,68 @@ setup_cmd() {
   local input
 
   echo "=== xcodeaiproxy setup ==="
-  read -r -p "OPENAI_BASE_URL [$current_base]: " input
-  [ -n "$input" ] && current_base="$input"
+  while true; do
+    read -r -p "OPENAI_BASE_URL [$current_base]: " input
+    input="$(trim_value "$input")"
+    [ -z "$input" ] && input="$current_base"
 
-  read -r -p "OPENAI_API_KEY [已隐藏，直接回车保留]: " input
-  [ -n "$input" ] && current_key="$input"
+    if validate_base_url "$input"; then
+      current_base="$input"
+      break
+    fi
 
-  read -r -p "OPENAI_MODEL [$current_model]: " input
-  [ -n "$input" ] && current_model="$input"
+    echo "❌ OPENAI_BASE_URL 格式不正确。"
+    echo "   对策: 必须以 http:// 或 https:// 开头，且不能包含空格。"
+    echo "   示例: https://api.openai.com/v1"
+  done
 
-  read -r -p "PORT [$current_port]: " input
-  [ -n "$input" ] && current_port="$input"
+  while true; do
+    if [ -n "$current_key" ]; then
+      read -r -p "OPENAI_API_KEY [已存在，回车保留]: " input
+      input="$(trim_value "$input")"
+      [ -z "$input" ] && input="$current_key"
+    else
+      read -r -p "OPENAI_API_KEY [必填]: " input
+      input="$(trim_value "$input")"
+    fi
+
+    if validate_api_key "$input"; then
+      current_key="$input"
+      break
+    fi
+
+    echo "❌ OPENAI_API_KEY 格式不正确。"
+    echo "   对策: 不能为空、不能有空格、长度至少 8。"
+  done
+
+  while true; do
+    read -r -p "OPENAI_MODEL [$current_model]: " input
+    input="$(trim_value "$input")"
+    [ -z "$input" ] && input="$current_model"
+
+    if validate_model "$input"; then
+      current_model="$input"
+      break
+    fi
+
+    echo "❌ OPENAI_MODEL 格式不正确。"
+    echo "   对策: 仅允许字母、数字、点、下划线、短横线、冒号、斜杠。"
+    echo "   示例: gpt-4.1-mini 或 o3-mini"
+  done
+
+  while true; do
+    read -r -p "PORT [默认3000，回车直接使用]: " input
+    input="$(trim_value "$input")"
+    [ -z "$input" ] && input="3000"
+
+    if validate_port "$input"; then
+      current_port="$input"
+      break
+    fi
+
+    echo "❌ PORT 格式不正确。"
+    echo "   对策: 请输入 1-65535 的数字。"
+  done
 
   upsert_env_value OPENAI_BASE_URL "$current_base"
   upsert_env_value OPENAI_API_KEY "$current_key"
@@ -208,6 +304,30 @@ start_cmd() {
 
   if [ -z "$base" ] || [ -z "$key" ] || [ -z "$model" ]; then
     echo "⚠️ 配置不完整，请先执行: xcodeaiproxy setup"
+    exit 1
+  fi
+
+  if ! validate_base_url "$base"; then
+    echo "❌ OPENAI_BASE_URL 格式不正确: $base"
+    echo "对策: 执行 xcodeaiproxy setup 重新配置。"
+    exit 1
+  fi
+
+  if ! validate_api_key "$key"; then
+    echo "❌ OPENAI_API_KEY 格式不正确（不能为空、不能有空格、长度至少 8）。"
+    echo "对策: 执行 xcodeaiproxy setup 重新配置。"
+    exit 1
+  fi
+
+  if ! validate_model "$model"; then
+    echo "❌ OPENAI_MODEL 格式不正确: $model"
+    echo "对策: 执行 xcodeaiproxy setup 重新配置。"
+    exit 1
+  fi
+
+  if ! validate_port "$port"; then
+    echo "❌ PORT 格式不正确: $port"
+    echo "对策: 执行 xcodeaiproxy setup 重新配置。"
     exit 1
   fi
 

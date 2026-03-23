@@ -120,7 +120,10 @@ PORT=3020 xcodeaiproxy-stop
 
 ## 配置说明
 
-- 推荐变量名：`OPENAI_COMPAT_*`
-- 兼容旧变量名：`OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL`
-- `OPENAI_MODEL`/`OPENAI_COMPAT_MODELS` 支持多个模型（逗号分隔）
+- 推荐使用 `xcodeaiproxy setup` 进行交互式配置（会写入项目根目录 `.env`）
+- `OPENAI_BASE_URL` 必须以 `http://` 或 `https://` 开头，且不能包含空格
+- `OPENAI_API_KEY` 不能为空、不能有空格、长度至少 8
+- `OPENAI_MODEL` 只允许字母、数字和 `._:/-` 字符
+- `PORT` 提示为 `默认3000，回车直接使用`；不填写会自动使用 `3000`
+- `xcodeaiproxy start` 启动前会再次校验上述配置，格式不对会提示执行 `xcodeaiproxy setup`
 - 真机调试请使用 Mac 局域网 IP，不要用 `localhost`
