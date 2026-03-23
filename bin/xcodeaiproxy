@@ -1,0 +1,357 @@
+#!/bin/bash
+set -euo pipefail
+
+resolve_script_dir() {
+  local src="$1"
+  while [ -L "$src" ]; do
+    local dir
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    if [[ "$src" != /* ]]; then
+      src="$dir/$src"
+    fi
+  done
+  cd -P "$(dirname "$src")" && pwd
+}
+
+SCRIPT_DIR="$(resolve_script_dir "${BASH_SOURCE[0]}")"
+DEFAULT_PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+BINARY_NAME="xcode-ai-proxy-rust"
+
+if [ -f "$DEFAULT_PROJECT_DIR/Cargo.toml" ] || [ -x "$DEFAULT_PROJECT_DIR/$BINARY_NAME" ]; then
+  PROJECT_DIR="${XCODEAIPROXY_HOME:-$DEFAULT_PROJECT_DIR}"
+else
+  PROJECT_DIR="${XCODEAIPROXY_HOME:-$HOME/xcode-ai-proxy-rust}"
+fi
+
+ENV_FILE="$PROJECT_DIR/.env"
+ENV_EXAMPLE_FILE="$PROJECT_DIR/.env.example"
+PID_FILE="$HOME/.xcodeaiproxy.pid"
+LOG_FILE="$HOME/.xcodeaiproxy.log"
+
+usage() {
+  cat <<'EOF'
+用法:
+  xcodeaiproxy [start|stop|restart|status|logs|setup|run]
+
+说明:
+  start    后台启动（默认）
+  stop     停止服务
+  restart  重启服务
+  status   查看运行状态
+  logs     查看日志（实时）
+  setup    交互式写入 .env
+  run      前台运行（占用当前终端）
+EOF
+}
+
+ensure_project() {
+  if [ ! -d "$PROJECT_DIR" ]; then
+    echo "❌ 未找到项目目录: $PROJECT_DIR"
+    echo "可设置环境变量 XCODEAIPROXY_HOME 指向项目根目录。"
+    exit 1
+  fi
+
+  if [ ! -f "$PROJECT_DIR/Cargo.toml" ] \
+    && [ ! -x "$PROJECT_DIR/$BINARY_NAME" ] \
+    && [ ! -x "$PROJECT_DIR/target/release/$BINARY_NAME" ]; then
+    echo "❌ 在 $PROJECT_DIR 下既没找到源码（Cargo.toml），也没找到可执行二进制（$BINARY_NAME）"
+    echo "可设置环境变量 XCODEAIPROXY_HOME 指向正确目录。"
+    exit 1
+  fi
+}
+
+ensure_env_file() {
+  if [ ! -f "$ENV_FILE" ]; then
+    if [ -f "$ENV_EXAMPLE_FILE" ]; then
+      cp "$ENV_EXAMPLE_FILE" "$ENV_FILE"
+    else
+      echo "❌ 未找到 $ENV_EXAMPLE_FILE"
+      exit 1
+    fi
+  fi
+}
+
+get_env_value() {
+  local key="$1"
+  if [ ! -f "$ENV_FILE" ]; then
+    echo ""
+    return
+  fi
+  awk -F= -v k="$key" '
+    /^[[:space:]]*#/ { next }
+    {
+      current_key=$1
+      gsub(/[[:space:]]/, "", current_key)
+      if (current_key == k) {
+        $1=""
+        sub(/^=/, "", $0)
+        sub(/^[[:space:]]+/, "", $0)
+        sub(/[[:space:]]+$/, "", $0)
+        print $0
+        exit
+      }
+    }
+  ' "$ENV_FILE"
+}
+
+upsert_env_value() {
+  local key="$1"
+  local value="$2"
+  local tmp
+  tmp="$(mktemp)"
+  awk -F= -v k="$key" -v v="$value" '
+    BEGIN { updated = 0 }
+    /^[[:space:]]*#/ { print; next }
+    {
+      current_key=$1
+      gsub(/[[:space:]]/, "", current_key)
+      if (current_key == k) {
+        print k "=" v
+        updated = 1
+      } else {
+        print
+      }
+    }
+    END {
+      if (updated == 0) {
+        print k "=" v
+      }
+    }
+  ' "$ENV_FILE" >"$tmp"
+  mv "$tmp" "$ENV_FILE"
+}
+
+resolve_port() {
+  if [ -n "${PORT:-}" ]; then
+    echo "$PORT"
+    return
+  fi
+  local env_port
+  env_port="$(get_env_value PORT)"
+  if [ -n "$env_port" ]; then
+    echo "$env_port"
+    return
+  fi
+  echo "3000"
+}
+
+is_healthy() {
+  local port="$1"
+  curl -sS -m 2 "http://127.0.0.1:${port}/health" >/dev/null 2>&1
+}
+
+find_binary() {
+  if [ -n "${XCODEAIPROXY_BIN:-}" ] && [ -x "$XCODEAIPROXY_BIN" ]; then
+    echo "$XCODEAIPROXY_BIN"
+    return
+  fi
+
+  if [ -x "$PROJECT_DIR/$BINARY_NAME" ]; then
+    echo "$PROJECT_DIR/$BINARY_NAME"
+    return
+  fi
+
+  if [ -x "$PROJECT_DIR/target/release/$BINARY_NAME" ]; then
+    echo "$PROJECT_DIR/target/release/$BINARY_NAME"
+    return
+  fi
+}
+
+setup_cmd() {
+  ensure_project
+  ensure_env_file
+
+  local current_base current_key current_model current_port
+  current_base="$(get_env_value OPENAI_BASE_URL)"
+  current_key="$(get_env_value OPENAI_API_KEY)"
+  current_model="$(get_env_value OPENAI_MODEL)"
+  current_port="$(get_env_value PORT)"
+
+  [ -z "$current_base" ] && current_base="https://api.deepseek.com/v1"
+  [ -z "$current_model" ] && current_model="deepseek-chat"
+  [ -z "$current_port" ] && current_port="3000"
+
+  local input
+
+  echo "=== xcodeaiproxy setup ==="
+  read -r -p "OPENAI_BASE_URL [$current_base]: " input
+  [ -n "$input" ] && current_base="$input"
+
+  read -r -p "OPENAI_API_KEY [已隐藏，直接回车保留]: " input
+  [ -n "$input" ] && current_key="$input"
+
+  read -r -p "OPENAI_MODEL [$current_model]: " input
+  [ -n "$input" ] && current_model="$input"
+
+  read -r -p "PORT [$current_port]: " input
+  [ -n "$input" ] && current_port="$input"
+
+  upsert_env_value OPENAI_BASE_URL "$current_base"
+  upsert_env_value OPENAI_API_KEY "$current_key"
+  upsert_env_value OPENAI_MODEL "$current_model"
+  upsert_env_value PORT "$current_port"
+
+  echo "✅ 配置已写入: $ENV_FILE"
+}
+
+start_cmd() {
+  ensure_project
+  ensure_env_file
+
+  local port base key model binary_path
+  port="$(resolve_port)"
+  base="$(get_env_value OPENAI_BASE_URL)"
+  key="$(get_env_value OPENAI_API_KEY)"
+  model="$(get_env_value OPENAI_MODEL)"
+  binary_path="$(find_binary || true)"
+
+  if [ -z "$base" ] || [ -z "$key" ] || [ -z "$model" ]; then
+    echo "⚠️ 配置不完整，请先执行: xcodeaiproxy setup"
+    exit 1
+  fi
+
+  if is_healthy "$port"; then
+    echo "ℹ️ xcodeaiproxy 已在运行 (port=$port)"
+    exit 0
+  fi
+
+  echo "🚀 后台启动 xcodeaiproxy (port=$port)"
+  if [ -n "$binary_path" ]; then
+    (
+      cd "$PROJECT_DIR"
+      nohup env PORT="$port" "$binary_path" >"$LOG_FILE" 2>&1 &
+      echo $! >"$PID_FILE"
+    )
+  else
+    if ! command -v cargo >/dev/null 2>&1; then
+      echo "❌ 未找到可执行二进制，也未安装 cargo。"
+      echo "请先执行 cargo build --release，或安装 Rust 工具链。"
+      exit 1
+    fi
+    (
+      cd "$PROJECT_DIR"
+      nohup env PORT="$port" cargo run >"$LOG_FILE" 2>&1 &
+      echo $! >"$PID_FILE"
+    )
+  fi
+
+  local ok=0
+  for _ in {1..50}; do
+    if is_healthy "$port"; then
+      ok=1
+      break
+    fi
+    sleep 0.2
+  done
+
+  if [ "$ok" -eq 1 ]; then
+    echo "✅ 启动成功: http://127.0.0.1:$port"
+    echo "日志文件: $LOG_FILE"
+    exit 0
+  fi
+
+  echo "❌ 启动失败，最近日志:"
+  tail -n 50 "$LOG_FILE" 2>/dev/null || true
+  exit 1
+}
+
+stop_cmd() {
+  ensure_project
+  ensure_env_file
+  local port stop_script
+  port="$(resolve_port)"
+  stop_script="$SCRIPT_DIR/xcodeaiproxy-stop"
+
+  if [ -x "$stop_script" ]; then
+    PORT="$port" "$stop_script" "$@"
+  elif command -v xcodeaiproxy-stop >/dev/null 2>&1; then
+    PORT="$port" xcodeaiproxy-stop "$@"
+  else
+    echo "❌ 未找到 xcodeaiproxy-stop"
+    exit 1
+  fi
+
+  if [ -f "$PID_FILE" ]; then
+    rm -f "$PID_FILE"
+  fi
+}
+
+status_cmd() {
+  ensure_project
+  ensure_env_file
+  local port
+  port="$(resolve_port)"
+  if is_healthy "$port"; then
+    echo "✅ running (port=$port)"
+  else
+    echo "ℹ️ stopped (port=$port)"
+  fi
+}
+
+logs_cmd() {
+  if [ ! -f "$LOG_FILE" ]; then
+    echo "ℹ️ 暂无日志: $LOG_FILE"
+    exit 0
+  fi
+  tail -n 100 -f "$LOG_FILE"
+}
+
+run_cmd() {
+  ensure_project
+  ensure_env_file
+  local binary_path
+  binary_path="$(find_binary || true)"
+  cd "$PROJECT_DIR"
+  if [ -n "$binary_path" ]; then
+    exec env PORT="$(resolve_port)" "$binary_path"
+  fi
+
+  if [ -x "./start_rust.sh" ]; then
+    exec ./start_rust.sh
+  fi
+
+  if command -v cargo >/dev/null 2>&1; then
+    exec cargo run
+  fi
+
+  echo "❌ 无法前台运行：未找到二进制、start_rust.sh 或 cargo。"
+  exit 1
+}
+
+COMMAND="${1:-start}"
+if [ $# -gt 0 ]; then
+  shift
+fi
+
+case "$COMMAND" in
+  start)
+    start_cmd "$@"
+    ;;
+  stop)
+    stop_cmd "$@"
+    ;;
+  restart)
+    stop_cmd "$@" || true
+    start_cmd "$@"
+    ;;
+  status)
+    status_cmd "$@"
+    ;;
+  logs)
+    logs_cmd "$@"
+    ;;
+  setup)
+    setup_cmd "$@"
+    ;;
+  run)
+    run_cmd "$@"
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    usage
+    exit 1
+    ;;
+esac

@@ -1,0 +1,124 @@
+#!/bin/bash
+set -euo pipefail
+
+resolve_script_dir() {
+  local src="$1"
+  while [ -L "$src" ]; do
+    local dir
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    if [[ "$src" != /* ]]; then
+      src="$dir/$src"
+    fi
+  done
+  cd -P "$(dirname "$src")" && pwd
+}
+
+SCRIPT_DIR="$(resolve_script_dir "${BASH_SOURCE[0]}")"
+DEFAULT_PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+BINARY_NAME="xcode-ai-proxy-rust"
+
+if [ -f "$DEFAULT_PROJECT_DIR/Cargo.toml" ] || [ -x "$DEFAULT_PROJECT_DIR/$BINARY_NAME" ]; then
+  PROJECT_DIR="${XCODEAIPROXY_HOME:-$DEFAULT_PROJECT_DIR}"
+else
+  PROJECT_DIR="${XCODEAIPROXY_HOME:-$HOME/xcode-ai-proxy-rust}"
+fi
+
+ENV_FILE="$PROJECT_DIR/.env"
+
+resolve_port() {
+  if [ $# -ge 1 ] && [ -n "${1:-}" ]; then
+    echo "$1"
+    return
+  fi
+
+  if [ -n "${PORT:-}" ]; then
+    echo "$PORT"
+    return
+  fi
+
+  if [ -f "$ENV_FILE" ]; then
+    local env_port
+    env_port=$(
+      awk -F= '
+        /^[[:space:]]*#/ { next }
+        /^[[:space:]]*PORT[[:space:]]*=/ {
+          gsub(/[[:space:]]/, "", $2);
+          print $2;
+          exit
+        }
+      ' "$ENV_FILE"
+    )
+
+    if [ -n "${env_port:-}" ]; then
+      echo "$env_port"
+      return
+    fi
+  fi
+
+  echo "3000"
+}
+
+is_proxy_cmd() {
+  local cmd="$1"
+  [[ "$cmd" == *"xcode-ai-proxy-rust"* ]] || [[ "$cmd" == *"cargo run"* ]]
+}
+
+PORT_TO_STOP="$(resolve_port "${1:-}")"
+
+if ! [[ "$PORT_TO_STOP" =~ ^[0-9]+$ ]]; then
+  echo "❌ 端口无效: $PORT_TO_STOP"
+  exit 1
+fi
+
+if ! command -v lsof >/dev/null 2>&1; then
+  echo "❌ 未找到 lsof，无法定位端口进程"
+  exit 1
+fi
+
+listening_pids=()
+while IFS= read -r pid; do
+  [ -n "$pid" ] && listening_pids+=("$pid")
+done < <(lsof -tiTCP:"$PORT_TO_STOP" -sTCP:LISTEN 2>/dev/null || true)
+
+if [ "${#listening_pids[@]}" -eq 0 ]; then
+  echo "ℹ️ 端口 $PORT_TO_STOP 没有监听进程。"
+  exit 0
+fi
+
+target_pids=()
+for pid in "${listening_pids[@]}"; do
+  cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  if is_proxy_cmd "$cmd"; then
+    target_pids+=("$pid")
+  fi
+done
+
+if [ "${#target_pids[@]}" -eq 0 ]; then
+  echo "⚠️ 端口 $PORT_TO_STOP 上有进程，但不是 xcode-ai-proxy-rust，未执行停止。"
+  echo "如需强制停止，可手动执行: kill <pid>"
+  echo "监听进程: ${listening_pids[*]}"
+  exit 1
+fi
+
+echo "🛑 正在停止 xcode-ai-proxy-rust (port=$PORT_TO_STOP, pid=${target_pids[*]})"
+kill "${target_pids[@]}" 2>/dev/null || true
+
+for _ in {1..20}; do
+  alive=0
+  for pid in "${target_pids[@]}"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      alive=1
+      break
+    fi
+  done
+  if [ "$alive" -eq 0 ]; then
+    echo "✅ 已停止"
+    exit 0
+  fi
+  sleep 0.2
+done
+
+echo "⚠️ 进程仍在运行，尝试强制停止..."
+kill -9 "${target_pids[@]}" 2>/dev/null || true
+echo "✅ 已强制停止"
