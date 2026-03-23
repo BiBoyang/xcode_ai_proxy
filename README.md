@@ -1,8 +1,6 @@
 # Xcode AI Proxy Rust
 
- Xcode AI 本地代理，支持一键命令行操作。
- 
- 使用 Rust 编写.
+给 Xcode 使用的本地代理，按 OpenAI 兼容格式转发到你的上游模型服务。
 
 ## 特性
 
@@ -12,47 +10,22 @@
 - 支持重试、超时、CORS
 - 提供 `xcodeaiproxy` / `xcodeaiproxy-stop` 命令
 
-## 接口
+## 快速开始
 
-- `GET /health`
-- `GET /debug/config`
-- `GET /v1/models`
-- `POST /v1/chat/completions`
-- `POST /api/v1/chat/completions`
-- `POST /v1/messages`
+1. 获取项目并进入目录
 
-## 安装（推荐）
+```bash
+git clone https://github.com/BiBoyang/xcode_ai_proxy.git
+cd xcode_ai_proxy
+```
+
+2. 安装命令到本机
 
 ```bash
 ./install.sh
 ```
 
-安装后会把命令安装到 `~/.local/bin`：
-
-- `xcodeaiproxy`
-- `xcodeaiproxy-stop`
-
-可选：复制安装（非符号链接）：
-
-```bash
-./install.sh --copy
-```
-
-若使用 `--copy` 且命令无法自动定位项目目录，可设置：
-
-```bash
-export XCODEAIPROXY_HOME="/path/to/xcode-ai-proxy-rust"
-```
-
-如果你的 PATH 不包含 `~/.local/bin`，请手动加入：
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-## 最简单使用流程
-
-1. 首次配置（交互式）
+3. 首次配置（交互式）
 
 ```bash
 xcodeaiproxy setup
@@ -67,30 +40,49 @@ OPENAI_BASE_URL（OpenAI 兼容接口地址）
 请输入新值（回车保留当前值）:
 ```
 
-2. 后台启动（默认端口 3000）
+4. 启动和停止
 
 ```bash
 xcodeaiproxy
-```
-
-3. 停止
-
-```bash
 xcodeaiproxy-stop
 ```
 
-## 常用命令
+## 安装说明
+
+`./install.sh` 会把以下命令安装到 `~/.local/bin`：
+
+- `xcodeaiproxy`
+- `xcodeaiproxy-stop`
+
+可选：复制安装（非符号链接）：
 
 ```bash
-xcodeaiproxy start
-xcodeaiproxy stop
-xcodeaiproxy restart
-xcodeaiproxy status
-xcodeaiproxy logs
-xcodeaiproxy run
+./install.sh --copy
 ```
 
-指定端口（临时）：
+若使用 `--copy` 且命令无法自动定位项目目录，可设置：
+
+```bash
+export XCODEAIPROXY_HOME="/path/to/xcode_ai_proxy"
+```
+
+若终端提示 `command not found`，请加入 PATH：
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+## 命令说明
+
+- `xcodeaiproxy` 或 `xcodeaiproxy start`：后台启动服务（默认端口 3000）
+- `xcodeaiproxy-stop` 或 `xcodeaiproxy stop`：一键停止服务
+- `xcodeaiproxy restart`：重启服务（改配置后常用）
+- `xcodeaiproxy status`：查看服务是否运行
+- `xcodeaiproxy logs`：实时查看日志（排错用）
+- `xcodeaiproxy run`：前台运行（调试用，会占用当前终端）
+- `xcodeaiproxy setup`：交互式写入/更新 `.env`
+
+临时指定端口（只对当前命令生效）：
 
 ```bash
 PORT=3020 xcodeaiproxy
@@ -109,6 +101,15 @@ PORT=3020 xcodeaiproxy-stop
 - `OPENAI_BASE_URL` 必须以 `http://` 或 `https://` 开头，且不能包含空格
 - `OPENAI_API_KEY` 不能为空、不能有空格、长度至少 8
 - `OPENAI_MODEL` 只允许字母、数字和 `._:/-` 字符
-- `PORT` 提示为 `默认3000，回车直接使用`；不填写会自动使用 `3000`
+- `PORT` 提示默认 `3000`，回车可直接使用默认值
 - `xcodeaiproxy start` 启动前会再次校验上述配置，格式不对会提示执行 `xcodeaiproxy setup`
 - 真机调试请使用 Mac 局域网 IP，不要用 `localhost`
+
+## 开发者信息（接口）
+
+- `GET /health`
+- `GET /debug/config`
+- `GET /v1/models`
+- `POST /v1/chat/completions`
+- `POST /api/v1/chat/completions`
+- `POST /v1/messages`
