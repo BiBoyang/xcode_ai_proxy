@@ -102,6 +102,13 @@ PORT=3020 xcodeaiproxy-stop
 - Base URL: `http://localhost:3000`（如改端口请同步修改）
 - API Key: `any-string-works`（任意字符串）
 
+## MCP 与 Skills
+
+- 当前项目是 OpenAI 兼容请求代理，不包含 MCP 客户端与 Skills 编排能力
+- 因此通过 Xcode + `xcodeaiproxy` 这条链路，默认不能直接使用 MCP / Skills
+- 推荐用法 1：在 Xcode 中继续使用本代理完成日常对话与代码辅助
+- 推荐用法 2：需要 MCP / Skills 时，在终端使用支持这些能力的 Agent 工具处理同一项目
+
 ## 配置说明
 
 - 推荐使用 `xcodeaiproxy setup` 进行交互式配置（会写入项目根目录 `.env`）
