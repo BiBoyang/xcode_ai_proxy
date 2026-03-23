@@ -42,33 +42,6 @@ Rust 版本的 Xcode AI 本地代理，功能对齐 Python 版并支持一键命
 export XCODEAIPROXY_HOME="/path/to/xcode-ai-proxy-rust"
 ```
 
-## 打包发布（GitHub Releases）
-
-一键生成发布目录、压缩包和校验文件：
-
-```bash
-./release.sh
-```
-
-常见选项：
-
-```bash
-# 指定 target
-./release.sh --target aarch64-apple-darwin
-
-# 只要 tar.gz
-./release.sh --no-zip
-
-# 打包前清理 dist
-./release.sh --clean
-```
-
-打包结果会输出在 `dist/`，包含：
-
-- 发布目录（内含二进制 + 脚本 + install.sh + .env.example）
-- `.tar.gz` / `.zip`
-- 对应 `.sha256`
-
 如果你的 PATH 不包含 `~/.local/bin`，请手动加入：
 
 ```bash
