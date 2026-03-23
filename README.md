@@ -4,7 +4,7 @@ Rust 版本的 Xcode AI 本地代理，功能对齐 Python 版并支持一键命
 
 ## 特性
 
-- 支持 `GLM/Kimi/DeepSeek`
+- 全部按 OpenAI 兼容格式转发
 - 支持任意 OpenAI 兼容上游
 - 支持流式透传（SSE）
 - 支持重试、超时、CORS
@@ -120,7 +120,7 @@ PORT=3020 xcodeaiproxy-stop
 
 ## 配置说明
 
-- 新变量名：`OPENAI_COMPAT_*`
+- 推荐变量名：`OPENAI_COMPAT_*`
 - 兼容旧变量名：`OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL`
 - `OPENAI_MODEL`/`OPENAI_COMPAT_MODELS` 支持多个模型（逗号分隔）
 - 真机调试请使用 Mac 局域网 IP，不要用 `localhost`

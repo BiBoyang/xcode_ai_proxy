@@ -169,75 +169,7 @@ fn load_config() -> Result<AppConfig, String> {
     let retry_delay_ms = parse_env_u64("RETRY_DELAY", 1000)?;
     let request_timeout_ms = parse_env_u64("REQUEST_TIMEOUT", 60_000)?;
 
-    let builtin_provider_env_vars = [
-        ("ZHIPU_API_KEY", "GLM-4.5 模型"),
-        ("KIMI_API_KEY", "Kimi 模型"),
-        ("DEEPSEEK_API_KEY", "DeepSeek 模型"),
-    ];
-    for (env_key, model_name) in builtin_provider_env_vars {
-        if env_non_empty(env_key).is_none() {
-            info!("ℹ️ 未设置 {env_key}，将跳过 {model_name}");
-        }
-    }
-
     let mut api_configs = HashMap::new();
-
-    if let Some(zhipu_api_key) = env_non_empty("ZHIPU_API_KEY") {
-        add_model_config(
-            &mut api_configs,
-            "glm-4.5",
-            ModelConfig {
-                api_url: "https://open.bigmodel.cn/api/paas/v4".to_string(),
-                api_key: zhipu_api_key,
-                model_type: "zhipu".to_string(),
-                name: "GLM-4.5".to_string(),
-                upstream_model: Some("glm-4.5".to_string()),
-                provider: None,
-            },
-        );
-    }
-
-    if let Some(kimi_api_key) = env_non_empty("KIMI_API_KEY") {
-        add_model_config(
-            &mut api_configs,
-            "kimi-k2-0905-preview",
-            ModelConfig {
-                api_url: "https://api.moonshot.cn/v1".to_string(),
-                api_key: kimi_api_key,
-                model_type: "kimi".to_string(),
-                name: "Kimi K2".to_string(),
-                upstream_model: Some("kimi-k2-0905-preview".to_string()),
-                provider: None,
-            },
-        );
-    }
-
-    if let Some(deepseek_api_key) = env_non_empty("DEEPSEEK_API_KEY") {
-        add_model_config(
-            &mut api_configs,
-            "deepseek-reasoner",
-            ModelConfig {
-                api_url: "https://api.deepseek.com/v1".to_string(),
-                api_key: deepseek_api_key.clone(),
-                model_type: "deepseek".to_string(),
-                name: "DeepSeek Reasoner".to_string(),
-                upstream_model: Some("deepseek-reasoner".to_string()),
-                provider: None,
-            },
-        );
-        add_model_config(
-            &mut api_configs,
-            "deepseek-chat",
-            ModelConfig {
-                api_url: "https://api.deepseek.com/v1".to_string(),
-                api_key: deepseek_api_key,
-                model_type: "deepseek".to_string(),
-                name: "DeepSeek Chat".to_string(),
-                upstream_model: Some("deepseek-chat".to_string()),
-                provider: None,
-            },
-        );
-    }
 
     let openai_compat_api_url =
         env_non_empty("OPENAI_COMPAT_API_URL").or_else(|| env_non_empty("OPENAI_BASE_URL"));
@@ -289,10 +221,7 @@ fn load_config() -> Result<AppConfig, String> {
     }
 
     if api_configs.is_empty() {
-        return Err(
-            "❌ 未配置任何模型。请至少设置一个可用配置（ZHIPU/KIMI/DEEPSEEK/OPENAI_COMPAT）"
-                .to_string(),
-        );
+        return Err("❌ 未配置任何模型。请设置 OPENAI_BASE_URL/OPENAI_API_KEY/OPENAI_MODEL 或 OPENAI_COMPAT_*".to_string());
     }
 
     Ok(AppConfig {
@@ -502,25 +431,12 @@ async fn handle_proxy(
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    let upstream_body = match config.model_type.as_str() {
-        "zhipu" => with_model_override(&request_body, "glm-4.5")?,
-        "kimi" => with_model_override(&request_body, "kimi-k2-0905-preview")?,
-        "deepseek" => build_deepseek_request(&request_body, &model)?,
-        "openai_compat" => {
-            let upstream_model = config
-                .upstream_model
-                .as_deref()
-                .unwrap_or(&model)
-                .to_string();
-            with_model_override(&request_body, &upstream_model)?
-        }
-        _ => {
-            return Err(AppError::Proxy(format!(
-                "未知的模型类型: {}",
-                config.model_type
-            )));
-        }
-    };
+    let upstream_model = config
+        .upstream_model
+        .as_deref()
+        .unwrap_or(&model)
+        .to_string();
+    let upstream_body = with_model_override(&request_body, &upstream_model)?;
 
     forward_with_retry(state, config, upstream_body, stream).await
 }
@@ -532,34 +448,6 @@ fn with_model_override(request_body: &Value, model: &str) -> Result<Value, AppEr
         .ok_or_else(|| AppError::InvalidRequest("Invalid request body".to_string()))?;
     body_obj.insert("model".to_string(), Value::String(model.to_string()));
     Ok(body)
-}
-
-fn build_deepseek_request(request_body: &Value, model: &str) -> Result<Value, AppError> {
-    let supported_params = [
-        "model",
-        "messages",
-        "stream",
-        "temperature",
-        "max_tokens",
-        "top_p",
-        "frequency_penalty",
-        "presence_penalty",
-        "stop",
-    ];
-
-    let body_obj = request_body
-        .as_object()
-        .ok_or_else(|| AppError::InvalidRequest("Invalid request body".to_string()))?;
-
-    let mut cleaned = Map::new();
-    for key in supported_params {
-        if let Some(value) = body_obj.get(key) {
-            cleaned.insert(key.to_string(), value.clone());
-        }
-    }
-
-    cleaned.insert("model".to_string(), Value::String(model.to_string()));
-    Ok(Value::Object(cleaned))
 }
 
 async fn forward_with_retry(
