@@ -98,6 +98,21 @@ get_env_value() {
   ' "$ENV_FILE"
 }
 
+find_case_mismatch_key() {
+  local key="$1"
+  awk -F= -v k="$key" '
+    /^[[:space:]]*#/ { next }
+    {
+      current_key=$1
+      gsub(/[[:space:]]/, "", current_key)
+      if (tolower(current_key) == tolower(k) && current_key != k) {
+        print current_key
+        exit
+      }
+    }
+  ' "$ENV_FILE"
+}
+
 trim_value() {
   local value="$1"
   value="${value#"${value%%[![:space:]]*}"}"
@@ -409,11 +424,13 @@ doctor_cmd() {
     esac
   }
 
-  local default_id base key model port
+  local default_id base key model
   local raw_extra_ids extra_count invalid_extra_count
   local port_checked
   local listening_pids proxy_pids
   local bad_space_lines
+  local extra_ids_case_mismatch
+  local model_key_ids_any_case
 
   echo "=== xcodeaiproxy doctor ==="
   echo "项目目录: $PROJECT_DIR"
@@ -433,7 +450,13 @@ doctor_cmd() {
   if validate_base_url "$base"; then
     doctor_emit ok "OPENAI_BASE_URL 格式正确"
   elif [ -z "$base" ]; then
-    doctor_emit fail "OPENAI_BASE_URL 未配置。对策: 执行 xcodeaiproxy setup。"
+    local base_case_mismatch
+    base_case_mismatch="$(find_case_mismatch_key OPENAI_BASE_URL)"
+    if [ -n "$base_case_mismatch" ]; then
+      doctor_emit fail "键名大小写错误: ${base_case_mismatch}，应为 OPENAI_BASE_URL"
+    else
+      doctor_emit fail "OPENAI_BASE_URL 未配置。对策: 执行 xcodeaiproxy setup。"
+    fi
   else
     doctor_emit fail "OPENAI_BASE_URL 格式错误。对策: 必须以 http:// 或 https:// 开头，且不能有空格。"
   fi
@@ -442,7 +465,13 @@ doctor_cmd() {
   if validate_api_key "$key"; then
     doctor_emit ok "OPENAI_API_KEY 格式正确"
   elif [ -z "$key" ]; then
-    doctor_emit fail "OPENAI_API_KEY 未配置。对策: 执行 xcodeaiproxy setup。"
+    local key_case_mismatch
+    key_case_mismatch="$(find_case_mismatch_key OPENAI_API_KEY)"
+    if [ -n "$key_case_mismatch" ]; then
+      doctor_emit fail "键名大小写错误: ${key_case_mismatch}，应为 OPENAI_API_KEY"
+    else
+      doctor_emit fail "OPENAI_API_KEY 未配置。对策: 执行 xcodeaiproxy setup。"
+    fi
   else
     doctor_emit fail "OPENAI_API_KEY 格式错误。对策: 不能为空、不能有空格、长度至少 8。"
   fi
@@ -451,14 +480,57 @@ doctor_cmd() {
   if validate_model "$model"; then
     doctor_emit ok "OPENAI_MODEL 格式正确: ${model}"
   elif [ -z "$model" ]; then
-    doctor_emit fail "OPENAI_MODEL 未配置。对策: 执行 xcodeaiproxy setup。"
+    local model_case_mismatch
+    model_case_mismatch="$(find_case_mismatch_key OPENAI_MODEL)"
+    if [ -n "$model_case_mismatch" ]; then
+      doctor_emit fail "键名大小写错误: ${model_case_mismatch}，应为 OPENAI_MODEL"
+    else
+      doctor_emit fail "OPENAI_MODEL 未配置。对策: 执行 xcodeaiproxy setup。"
+    fi
   else
     doctor_emit fail "OPENAI_MODEL 格式错误: ${model}（仅允许字母、数字、点、下划线、短横线、冒号、斜杠）"
   fi
 
   raw_extra_ids="$(get_env_value EXTRA_MODEL_IDS)"
+  extra_ids_case_mismatch="$(find_case_mismatch_key EXTRA_MODEL_IDS)"
+  model_key_ids_any_case="$(awk '
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    index($0, "=") == 0 { next }
+    {
+      line=$0
+      sub(/^[[:space:]]+/, "", line)
+      key=line
+      sub(/=.*/, "", key)
+      low=tolower(key)
+      gsub(/[[:space:]]/, "", low)
+      if (low ~ /^model_[a-z0-9_]+_(base_url|api_key|model|name|provider)$/) {
+        id=low
+        sub(/^model_/, "", id)
+        sub(/_(base_url|api_key|model|name|provider)$/, "", id)
+        seen[id]=1
+      }
+    }
+    END {
+      for (id in seen) {
+        print id
+      }
+    }
+  ' "$ENV_FILE" | sort)"
+
   if [ -z "$raw_extra_ids" ]; then
-    doctor_emit warn "未配置 EXTRA_MODEL_IDS（可选，多模型时再加）。"
+    if [ -n "$extra_ids_case_mismatch" ]; then
+      doctor_emit fail "键名大小写错误: ${extra_ids_case_mismatch}，应为 EXTRA_MODEL_IDS"
+    elif [ -n "$model_key_ids_any_case" ]; then
+      doctor_emit fail "检测到 MODEL_<ID>_* 配置，但 EXTRA_MODEL_IDS 为空。"
+      echo "  检测到的模型 ID（忽略大小写）:"
+      while IFS= read -r lower_id; do
+        [ -z "$lower_id" ] && continue
+        echo "  - $lower_id"
+      done <<<"$model_key_ids_any_case"
+      echo "  对策: 在 .env 增加 EXTRA_MODEL_IDS=ModelA,ModelB（与 MODEL_<ID>_* 里的 ID 保持一致）。"
+    else
+      doctor_emit warn "未配置 EXTRA_MODEL_IDS（可选，多模型时再加）。"
+    fi
   else
     doctor_emit ok "已配置 EXTRA_MODEL_IDS: ${raw_extra_ids}"
   fi
@@ -487,8 +559,43 @@ doctor_cmd() {
     extra_model="$(get_env_value "$extra_model_key")"
     extra_name="$(get_env_value "$extra_name_key")"
 
-    if [ -z "$extra_base" ] || [ -z "$extra_key" ] || [ -z "$extra_model" ]; then
-      doctor_emit fail "模型 ${model_id} 配置不完整（需要 ${extra_base_key} / ${extra_key_key} / ${extra_model_key}）"
+    local missing_required
+    missing_required=0
+
+    if [ -z "$extra_base" ]; then
+      local extra_base_case_mismatch
+      extra_base_case_mismatch="$(find_case_mismatch_key "$extra_base_key")"
+      if [ -n "$extra_base_case_mismatch" ]; then
+        doctor_emit fail "模型 ${model_id} 键名大小写错误: ${extra_base_case_mismatch}，应为 ${extra_base_key}"
+      else
+        doctor_emit fail "模型 ${model_id} 缺少 ${extra_base_key}"
+      fi
+      missing_required=1
+    fi
+
+    if [ -z "$extra_key" ]; then
+      local extra_key_case_mismatch
+      extra_key_case_mismatch="$(find_case_mismatch_key "$extra_key_key")"
+      if [ -n "$extra_key_case_mismatch" ]; then
+        doctor_emit fail "模型 ${model_id} 键名大小写错误: ${extra_key_case_mismatch}，应为 ${extra_key_key}"
+      else
+        doctor_emit fail "模型 ${model_id} 缺少 ${extra_key_key}"
+      fi
+      missing_required=1
+    fi
+
+    if [ -z "$extra_model" ]; then
+      local extra_model_case_mismatch
+      extra_model_case_mismatch="$(find_case_mismatch_key "$extra_model_key")"
+      if [ -n "$extra_model_case_mismatch" ]; then
+        doctor_emit fail "模型 ${model_id} 键名大小写错误: ${extra_model_case_mismatch}，应为 ${extra_model_key}"
+      else
+        doctor_emit fail "模型 ${model_id} 缺少 ${extra_model_key}"
+      fi
+      missing_required=1
+    fi
+
+    if [ "$missing_required" -eq 1 ]; then
       continue
     fi
 
@@ -511,7 +618,13 @@ doctor_cmd() {
     fi
 
     if [ -z "$extra_name" ]; then
-      doctor_emit warn "${extra_name_key} 未设置（可选，仅用于显示）"
+      local extra_name_case_mismatch
+      extra_name_case_mismatch="$(find_case_mismatch_key "$extra_name_key")"
+      if [ -n "$extra_name_case_mismatch" ]; then
+        doctor_emit warn "模型 ${model_id} 键名大小写可能有误: ${extra_name_case_mismatch}，建议改为 ${extra_name_key}"
+      else
+        doctor_emit warn "${extra_name_key} 未设置（可选，仅用于显示）"
+      fi
     elif printf '%s' "$extra_name" | grep -q '[[:space:]]'; then
       doctor_emit warn "${extra_name_key} 含空格，建议改为无空格或加双引号以避免 dotenv 解析问题"
     else

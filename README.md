@@ -81,7 +81,7 @@ export PATH="$HOME/.local/bin:$PATH"
 - `xcodeaiproxy models`：查看当前默认模型与可切换模型列表
 - `xcodeaiproxy use-model <模型ID>`：切换默认模型来源（写入 `OPENAI_*`）
 - `xcodeaiproxy logs`：实时查看日志（排错用）
-- `xcodeaiproxy doctor`：一键体检（检查 `.env` 配置格式、额外模型配置、端口与健康状态）
+- `xcodeaiproxy doctor`：一键体检（检查 `.env` 空格值、`EXTRA_MODEL_IDS` 漏填、模型键名大小写、端口与健康状态）
 - `xcodeaiproxy run`：前台运行（调试用，会占用当前终端）
 - `xcodeaiproxy setup`：交互式写入/更新 `.env`
 
