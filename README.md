@@ -112,6 +112,7 @@ PORT=3020 xcodeaiproxy-stop
 ## 配置说明
 
 - 推荐使用 `xcodeaiproxy setup` 进行交互式配置（会写入项目根目录 `.env`）
+- `setup` 会写入默认模型：`DEFAULT_MODEL_ID=DefaultModel` + `OPENAI_BASE_URL/OPENAI_API_KEY/OPENAI_MODEL`
 - `setup` 交互里会明确区分 `当前值` 与 `示例`，避免误读
 - `OPENAI_BASE_URL` 必须以 `http://` 或 `https://` 开头，且不能包含空格
 - `OPENAI_API_KEY` 不能为空、不能有空格、长度至少 8
@@ -119,6 +120,42 @@ PORT=3020 xcodeaiproxy-stop
 - `PORT` 提示默认 `3000`，回车可直接使用默认值
 - `xcodeaiproxy start` 启动前会再次校验上述配置，格式不对会提示执行 `xcodeaiproxy setup`
 - 真机调试请使用 Mac 局域网 IP，不要用 `localhost`
+
+### 多供应商模型（手动追加）
+
+`setup` 只负责默认模型。你可以在 `.env` 追加更多模型（OpenAI 兼容格式）：
+
+```env
+# 默认模型（setup 写入）
+DEFAULT_MODEL_ID=DefaultModel
+OPENAI_BASE_URL=https://api.deepseek.com/v1
+OPENAI_API_KEY=sk-xxxx
+OPENAI_MODEL=deepseek-chat
+
+# 追加模型列表（模型 id 用逗号分隔）
+EXTRA_MODEL_IDS=ModelA,ModelB
+
+# ModelA
+MODEL_ModelA_BASE_URL=https://api.openai.com/v1
+MODEL_ModelA_API_KEY=sk-openai-xxxx
+MODEL_ModelA_MODEL=gpt-4.1-mini
+MODEL_ModelA_NAME=OpenAI GPT-4.1 mini
+MODEL_ModelA_PROVIDER=openai
+
+# ModelB
+MODEL_ModelB_BASE_URL=https://api.moonshot.cn/v1
+MODEL_ModelB_API_KEY=sk-kimi-xxxx
+MODEL_ModelB_MODEL=kimi-k2-0711-preview
+MODEL_ModelB_NAME=Kimi K2
+MODEL_ModelB_PROVIDER=moonshot
+```
+
+说明：
+
+- `EXTRA_MODEL_IDS` 中的 id 仅支持字母/数字/下划线，且不能以数字开头
+- 每个模型必须同时配置 `BASE_URL`、`API_KEY`、`MODEL`
+- 改完 `.env` 后执行 `xcodeaiproxy restart`
+- 模型列表可通过 `GET /v1/models` 查看，客户端可按模型 id 手动切换
 
 ## 开发者信息（接口）
 

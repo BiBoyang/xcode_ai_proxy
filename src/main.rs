@@ -171,15 +171,67 @@ fn load_config() -> Result<AppConfig, String> {
 
     let mut api_configs = HashMap::new();
 
-    let openai_compat_api_url =
-        env_non_empty("OPENAI_COMPAT_API_URL").or_else(|| env_non_empty("OPENAI_BASE_URL"));
-    let openai_compat_api_key =
-        env_non_empty("OPENAI_COMPAT_API_KEY").or_else(|| env_non_empty("OPENAI_API_KEY"));
+    let default_model_id =
+        env_non_empty("DEFAULT_MODEL_ID").unwrap_or_else(|| "DefaultModel".to_string());
+    let default_model_name =
+        env_non_empty("DEFAULT_MODEL_NAME").unwrap_or_else(|| "Default Model".to_string());
 
-    let mut openai_compat_models = parse_csv_env("OPENAI_COMPAT_MODELS");
-    if openai_compat_models.is_empty() {
-        openai_compat_models = parse_csv_env("OPENAI_MODEL");
+    let default_api_url = env_non_empty("OPENAI_BASE_URL");
+    let default_api_key = env_non_empty("OPENAI_API_KEY");
+    let default_models = parse_csv_env("OPENAI_MODEL");
+
+    if default_api_url.is_some() || default_api_key.is_some() || !default_models.is_empty() {
+        if default_api_url.is_none() || default_api_key.is_none() || default_models.is_empty() {
+            warn!(
+                "⚠️ OPENAI_* 配置不完整。需要同时设置 OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL"
+            );
+        } else {
+            let normalized_url = normalize_api_url(
+                default_api_url
+                    .as_deref()
+                    .expect("default_api_url should exist after validation"),
+            );
+            let api_key = default_api_key.expect("default_api_key should exist after validation");
+
+            if default_models.len() == 1 {
+                let upstream_model = default_models[0].clone();
+                add_model_config(
+                    &mut api_configs,
+                    &default_model_id,
+                    ModelConfig {
+                        api_url: normalized_url,
+                        api_key,
+                        model_type: "openai_compat".to_string(),
+                        name: format!("{default_model_name} ({upstream_model})"),
+                        upstream_model: Some(upstream_model),
+                        provider: Some("openai_compat".to_string()),
+                    },
+                );
+            } else {
+                warn!(
+                    "⚠️ OPENAI_MODEL 包含多个模型，已按旧兼容模式加载。建议使用 DEFAULT_MODEL_ID + EXTRA_MODEL_IDS。"
+                );
+                for model in default_models {
+                    add_model_config(
+                        &mut api_configs,
+                        &model,
+                        ModelConfig {
+                            api_url: normalized_url.clone(),
+                            api_key: api_key.clone(),
+                            model_type: "openai_compat".to_string(),
+                            name: format!("OpenAI-Compatible {model}"),
+                            upstream_model: Some(model.clone()),
+                            provider: Some("openai_compat".to_string()),
+                        },
+                    );
+                }
+            }
+        }
     }
+
+    let openai_compat_api_url = env_non_empty("OPENAI_COMPAT_API_URL");
+    let openai_compat_api_key = env_non_empty("OPENAI_COMPAT_API_KEY");
+    let openai_compat_models = parse_csv_env("OPENAI_COMPAT_MODELS");
 
     let openai_compat_name_prefix = env_non_empty("OPENAI_COMPAT_NAME_PREFIX")
         .unwrap_or_else(|| "OpenAI-Compatible".to_string());
@@ -220,8 +272,10 @@ fn load_config() -> Result<AppConfig, String> {
         }
     }
 
+    load_extra_models(&mut api_configs)?;
+
     if api_configs.is_empty() {
-        return Err("❌ 未配置任何模型。请设置 OPENAI_BASE_URL/OPENAI_API_KEY/OPENAI_MODEL 或 OPENAI_COMPAT_*".to_string());
+        return Err("❌ 未配置任何模型。请先执行 xcodeaiproxy setup，或在 .env 中配置 EXTRA_MODEL_IDS 追加更多模型。".to_string());
     }
 
     Ok(AppConfig {
@@ -244,6 +298,57 @@ fn add_model_config(
         return;
     }
     api_configs.insert(model_id.to_string(), config);
+}
+
+fn is_valid_extra_model_id(model_id: &str) -> bool {
+    let mut chars = model_id.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
+        _ => return false,
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+fn load_extra_models(api_configs: &mut HashMap<String, ModelConfig>) -> Result<(), String> {
+    let extra_model_ids = parse_csv_env("EXTRA_MODEL_IDS");
+    for model_id in extra_model_ids {
+        if !is_valid_extra_model_id(&model_id) {
+            return Err(format!(
+                "❌ EXTRA_MODEL_IDS 中模型 id 无效: {model_id}。仅支持字母、数字、下划线，且不能以数字开头。"
+            ));
+        }
+
+        let base_url_key = format!("MODEL_{model_id}_BASE_URL");
+        let api_key_key = format!("MODEL_{model_id}_API_KEY");
+        let model_key = format!("MODEL_{model_id}_MODEL");
+        let name_key = format!("MODEL_{model_id}_NAME");
+        let provider_key = format!("MODEL_{model_id}_PROVIDER");
+
+        let base_url = env_non_empty(&base_url_key)
+            .ok_or_else(|| format!("❌ 模型 {model_id} 配置不完整，缺少 {base_url_key}"))?;
+        let api_key = env_non_empty(&api_key_key)
+            .ok_or_else(|| format!("❌ 模型 {model_id} 配置不完整，缺少 {api_key_key}"))?;
+        let upstream_model = env_non_empty(&model_key)
+            .ok_or_else(|| format!("❌ 模型 {model_id} 配置不完整，缺少 {model_key}"))?;
+        let display_name =
+            env_non_empty(&name_key).unwrap_or_else(|| format!("OpenAI-Compatible {model_id}"));
+        let provider = env_non_empty(&provider_key).unwrap_or_else(|| "openai_compat".to_string());
+
+        add_model_config(
+            api_configs,
+            &model_id,
+            ModelConfig {
+                api_url: normalize_api_url(&base_url),
+                api_key,
+                model_type: "openai_compat".to_string(),
+                name: display_name,
+                upstream_model: Some(upstream_model),
+                provider: Some(provider),
+            },
+        );
+    }
+
+    Ok(())
 }
 
 fn parse_env_u16(key: &str, default_value: u16) -> Result<u16, String> {
@@ -575,6 +680,8 @@ mod tests {
         "MAX_RETRIES",
         "RETRY_DELAY",
         "REQUEST_TIMEOUT",
+        "DEFAULT_MODEL_ID",
+        "DEFAULT_MODEL_NAME",
         "OPENAI_COMPAT_API_URL",
         "OPENAI_COMPAT_API_KEY",
         "OPENAI_COMPAT_MODELS",
@@ -583,6 +690,17 @@ mod tests {
         "OPENAI_BASE_URL",
         "OPENAI_API_KEY",
         "OPENAI_MODEL",
+        "EXTRA_MODEL_IDS",
+        "MODEL_ModelA_BASE_URL",
+        "MODEL_ModelA_API_KEY",
+        "MODEL_ModelA_MODEL",
+        "MODEL_ModelA_NAME",
+        "MODEL_ModelA_PROVIDER",
+        "MODEL_ModelB_BASE_URL",
+        "MODEL_ModelB_API_KEY",
+        "MODEL_ModelB_MODEL",
+        "MODEL_ModelB_NAME",
+        "MODEL_ModelB_PROVIDER",
         "UNIT_TEST_ENV",
         "UNIT_TEST_CSV",
     ];
@@ -817,6 +935,31 @@ mod tests {
     }
 
     #[test]
+    fn load_config_uses_default_model_id_for_single_openai_model() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        let env_scope = EnvScope::new(CONFIG_ENV_KEYS);
+
+        env_scope.set("OPENAI_BASE_URL", "https://api.deepseek.com/v1/");
+        env_scope.set("OPENAI_API_KEY", "sk-default-key");
+        env_scope.set("OPENAI_MODEL", "deepseek-chat");
+        env_scope.set("DEFAULT_MODEL_ID", "DefaultModel");
+        env_scope.set("DEFAULT_MODEL_NAME", "My Default");
+
+        let config = load_config().expect("load_config should succeed");
+        assert_eq!(config.api_configs.len(), 1);
+        let model = config
+            .api_configs
+            .get("DefaultModel")
+            .expect("DefaultModel should exist");
+
+        assert_eq!(model.api_url, "https://api.deepseek.com/v1");
+        assert_eq!(model.api_key, "sk-default-key");
+        assert_eq!(model.upstream_model.as_deref(), Some("deepseek-chat"));
+        assert_eq!(model.name, "My Default (deepseek-chat)");
+        assert_eq!(model.provider.as_deref(), Some("openai_compat"));
+    }
+
+    #[test]
     fn load_config_supports_custom_prefix_and_provider() {
         let _guard = env_lock().lock().expect("env lock poisoned");
         let env_scope = EnvScope::new(CONFIG_ENV_KEYS);
@@ -840,6 +983,92 @@ mod tests {
         assert_eq!(model.name, "My Proxy kimi-2.5");
         assert_eq!(model.provider.as_deref(), Some("my_provider"));
         assert_eq!(model.upstream_model.as_deref(), Some("kimi-2.5"));
+    }
+
+    #[test]
+    fn load_config_supports_extra_models_from_env() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        let env_scope = EnvScope::new(CONFIG_ENV_KEYS);
+
+        env_scope.set("OPENAI_BASE_URL", "https://api.deepseek.com/v1");
+        env_scope.set("OPENAI_API_KEY", "sk-default-key");
+        env_scope.set("OPENAI_MODEL", "deepseek-chat");
+        env_scope.set("EXTRA_MODEL_IDS", "ModelA,ModelB");
+
+        env_scope.set("MODEL_ModelA_BASE_URL", "https://api.openai.com/v1/");
+        env_scope.set("MODEL_ModelA_API_KEY", "sk-model-a");
+        env_scope.set("MODEL_ModelA_MODEL", "gpt-4.1-mini");
+        env_scope.set("MODEL_ModelA_NAME", "OpenAI GPT-4.1 mini");
+
+        env_scope.set(
+            "MODEL_ModelB_BASE_URL",
+            "https://api.moonshot.cn/v1/chat/completions",
+        );
+        env_scope.set("MODEL_ModelB_API_KEY", "sk-model-b");
+        env_scope.set("MODEL_ModelB_MODEL", "kimi-k2-0711-preview");
+        env_scope.set("MODEL_ModelB_PROVIDER", "moonshot");
+
+        let config = load_config().expect("load_config should succeed");
+        assert_eq!(config.api_configs.len(), 3);
+
+        let model_a = config
+            .api_configs
+            .get("ModelA")
+            .expect("ModelA should exist");
+        assert_eq!(model_a.api_url, "https://api.openai.com/v1");
+        assert_eq!(model_a.upstream_model.as_deref(), Some("gpt-4.1-mini"));
+        assert_eq!(model_a.name, "OpenAI GPT-4.1 mini");
+        assert_eq!(model_a.provider.as_deref(), Some("openai_compat"));
+
+        let model_b = config
+            .api_configs
+            .get("ModelB")
+            .expect("ModelB should exist");
+        assert_eq!(model_b.api_url, "https://api.moonshot.cn/v1");
+        assert_eq!(
+            model_b.upstream_model.as_deref(),
+            Some("kimi-k2-0711-preview")
+        );
+        assert_eq!(model_b.name, "OpenAI-Compatible ModelB");
+        assert_eq!(model_b.provider.as_deref(), Some("moonshot"));
+    }
+
+    #[test]
+    fn load_config_errors_on_invalid_extra_model_id() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        let env_scope = EnvScope::new(CONFIG_ENV_KEYS);
+
+        env_scope.set("OPENAI_BASE_URL", "https://api.deepseek.com/v1");
+        env_scope.set("OPENAI_API_KEY", "sk-default-key");
+        env_scope.set("OPENAI_MODEL", "deepseek-chat");
+        env_scope.set("EXTRA_MODEL_IDS", "bad-id");
+
+        let error = load_config().expect_err("load_config should fail for invalid model id");
+        assert!(
+            error.contains("EXTRA_MODEL_IDS 中模型 id 无效: bad-id"),
+            "unexpected error message: {error}"
+        );
+    }
+
+    #[test]
+    fn load_config_errors_on_incomplete_extra_model_config() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        let env_scope = EnvScope::new(CONFIG_ENV_KEYS);
+
+        env_scope.set("OPENAI_BASE_URL", "https://api.deepseek.com/v1");
+        env_scope.set("OPENAI_API_KEY", "sk-default-key");
+        env_scope.set("OPENAI_MODEL", "deepseek-chat");
+        env_scope.set("EXTRA_MODEL_IDS", "ModelA");
+        env_scope.set("MODEL_ModelA_BASE_URL", "https://api.openai.com/v1");
+        env_scope.set("MODEL_ModelA_API_KEY", "sk-model-a");
+        // MODEL_ModelA_MODEL intentionally missing.
+
+        let error =
+            load_config().expect_err("load_config should fail for incomplete extra model config");
+        assert!(
+            error.contains("模型 ModelA 配置不完整，缺少 MODEL_ModelA_MODEL"),
+            "unexpected error message: {error}"
+        );
     }
 
     #[test]
@@ -890,8 +1119,9 @@ mod tests {
 
     #[tokio::test]
     async fn app_error_upstream_api_maps_status_and_type() {
-        let response = AppError::UpstreamApi(StatusCode::BAD_GATEWAY, "gateway failure".to_string())
-            .into_response();
+        let response =
+            AppError::UpstreamApi(StatusCode::BAD_GATEWAY, "gateway failure".to_string())
+                .into_response();
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
 
         let body = to_bytes(response.into_body(), usize::MAX)

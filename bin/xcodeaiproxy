@@ -134,6 +134,12 @@ validate_model() {
   printf '%s' "$value" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._:/-]*$'
 }
 
+validate_model_id() {
+  local value="$1"
+  [ -n "$value" ] || return 1
+  printf '%s' "$value" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*$'
+}
+
 validate_port() {
   local value="$1"
   printf '%s' "$value" | grep -Eq '^[0-9]+$' || return 1
@@ -212,13 +218,18 @@ setup_cmd() {
   ensure_project
   ensure_env_file
 
-  local current_base current_key current_model current_port
+  local current_default_model_id current_base current_key current_model current_port
   local default_base default_model default_port
+  current_default_model_id="$(get_env_value DEFAULT_MODEL_ID)"
   current_base="$(get_env_value OPENAI_BASE_URL)"
   current_key="$(get_env_value OPENAI_API_KEY)"
   current_model="$(get_env_value OPENAI_MODEL)"
   current_port="$(get_env_value PORT)"
 
+  [ -z "$current_default_model_id" ] && current_default_model_id="DefaultModel"
+  if ! validate_model_id "$current_default_model_id"; then
+    current_default_model_id="DefaultModel"
+  fi
   default_base="https://api.openai.com/v1"
   default_model="gpt-4.1-mini"
   default_port="3000"
@@ -226,6 +237,7 @@ setup_cmd() {
   local input
 
   echo "=== xcodeaiproxy setup ==="
+  echo "默认模型 ID: ${current_default_model_id}（可在 .env 修改 DEFAULT_MODEL_ID）"
   while true; do
     echo
     echo "OPENAI_BASE_URL（OpenAI 兼容接口地址）"
@@ -344,12 +356,14 @@ setup_cmd() {
     echo "   对策: 请输入 1-65535 的数字。"
   done
 
+  upsert_env_value DEFAULT_MODEL_ID "$current_default_model_id"
   upsert_env_value OPENAI_BASE_URL "$current_base"
   upsert_env_value OPENAI_API_KEY "$current_key"
   upsert_env_value OPENAI_MODEL "$current_model"
   upsert_env_value PORT "$current_port"
 
   echo "✅ 配置已写入: $ENV_FILE"
+  echo "ℹ️ 如需多供应商模型，可在 .env 里追加 EXTRA_MODEL_IDS 与 MODEL_<ID>_* 配置。"
 }
 
 start_cmd() {
