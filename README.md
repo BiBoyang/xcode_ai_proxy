@@ -81,6 +81,7 @@ export PATH="$HOME/.local/bin:$PATH"
 - `xcodeaiproxy models`：查看当前默认模型与可切换模型列表
 - `xcodeaiproxy use-model <模型ID>`：切换默认模型来源（写入 `OPENAI_*`）
 - `xcodeaiproxy logs`：实时查看日志（排错用）
+- `xcodeaiproxy doctor`：一键体检（检查 `.env` 配置格式、额外模型配置、端口与健康状态）
 - `xcodeaiproxy run`：前台运行（调试用，会占用当前终端）
 - `xcodeaiproxy setup`：交互式写入/更新 `.env`
 
@@ -134,6 +135,7 @@ xcodeaiproxy restart
 - `OPENAI_MODEL` 只允许字母、数字和 `._:/-` 字符
 - `PORT` 提示默认 `3000`，回车可直接使用默认值
 - `xcodeaiproxy start` 启动前会再次校验上述配置，格式不对会提示执行 `xcodeaiproxy setup`
+- 如果你遇到启动失败、模型不显示或配置不生效，先执行 `xcodeaiproxy doctor`
 - 真机调试请使用 Mac 局域网 IP，不要用 `localhost`
 
 ### 多供应商模型（手动追加）

@@ -32,7 +32,7 @@ LOG_FILE="$HOME/.xcodeaiproxy.log"
 usage() {
   cat <<'EOF'
 用法:
-  xcodeaiproxy [start|stop|restart|status|logs|setup|run|models|use-model]
+  xcodeaiproxy [start|stop|restart|status|logs|setup|run|models|use-model|doctor]
 
 说明:
   start    后台启动（默认）
@@ -44,6 +44,7 @@ usage() {
   run      前台运行（占用当前终端）
   models   查看模型列表与当前默认模型
   use-model <模型ID>  切换默认模型来源（写入 OPENAI_*）
+  doctor   一键体检配置与运行环境
 EOF
 }
 
@@ -378,6 +379,236 @@ use_model_cmd() {
   if is_healthy "$port"; then
     echo "ℹ️ 服务正在运行，建议执行: xcodeaiproxy restart"
   fi
+}
+
+doctor_cmd() {
+  ensure_project
+  ensure_env_file
+
+  local pass_count warn_count fail_count
+  pass_count=0
+  warn_count=0
+  fail_count=0
+
+  doctor_emit() {
+    local level="$1"
+    local message="$2"
+    case "$level" in
+      ok)
+        echo "✅ $message"
+        pass_count=$((pass_count + 1))
+        ;;
+      warn)
+        echo "⚠️ $message"
+        warn_count=$((warn_count + 1))
+        ;;
+      fail)
+        echo "❌ $message"
+        fail_count=$((fail_count + 1))
+        ;;
+    esac
+  }
+
+  local default_id base key model port
+  local raw_extra_ids extra_count invalid_extra_count
+  local port_checked
+  local listening_pids proxy_pids
+  local bad_space_lines
+
+  echo "=== xcodeaiproxy doctor ==="
+  echo "项目目录: $PROJECT_DIR"
+  echo "配置文件: $ENV_FILE"
+  echo
+
+  default_id="$(get_env_value DEFAULT_MODEL_ID)"
+  if [ -z "$default_id" ]; then
+    doctor_emit warn "DEFAULT_MODEL_ID 未设置，将按 DefaultModel 兜底。"
+  elif validate_model_id "$default_id"; then
+    doctor_emit ok "DEFAULT_MODEL_ID 格式正确: ${default_id}"
+  else
+    doctor_emit fail "DEFAULT_MODEL_ID 格式错误: ${default_id}（仅支持字母/数字/下划线，且不能以数字开头）"
+  fi
+
+  base="$(get_env_value OPENAI_BASE_URL)"
+  if validate_base_url "$base"; then
+    doctor_emit ok "OPENAI_BASE_URL 格式正确"
+  elif [ -z "$base" ]; then
+    doctor_emit fail "OPENAI_BASE_URL 未配置。对策: 执行 xcodeaiproxy setup。"
+  else
+    doctor_emit fail "OPENAI_BASE_URL 格式错误。对策: 必须以 http:// 或 https:// 开头，且不能有空格。"
+  fi
+
+  key="$(get_env_value OPENAI_API_KEY)"
+  if validate_api_key "$key"; then
+    doctor_emit ok "OPENAI_API_KEY 格式正确"
+  elif [ -z "$key" ]; then
+    doctor_emit fail "OPENAI_API_KEY 未配置。对策: 执行 xcodeaiproxy setup。"
+  else
+    doctor_emit fail "OPENAI_API_KEY 格式错误。对策: 不能为空、不能有空格、长度至少 8。"
+  fi
+
+  model="$(get_env_value OPENAI_MODEL)"
+  if validate_model "$model"; then
+    doctor_emit ok "OPENAI_MODEL 格式正确: ${model}"
+  elif [ -z "$model" ]; then
+    doctor_emit fail "OPENAI_MODEL 未配置。对策: 执行 xcodeaiproxy setup。"
+  else
+    doctor_emit fail "OPENAI_MODEL 格式错误: ${model}（仅允许字母、数字、点、下划线、短横线、冒号、斜杠）"
+  fi
+
+  raw_extra_ids="$(get_env_value EXTRA_MODEL_IDS)"
+  if [ -z "$raw_extra_ids" ]; then
+    doctor_emit warn "未配置 EXTRA_MODEL_IDS（可选，多模型时再加）。"
+  else
+    doctor_emit ok "已配置 EXTRA_MODEL_IDS: ${raw_extra_ids}"
+  fi
+
+  extra_count=0
+  invalid_extra_count=0
+  while IFS= read -r model_id; do
+    [ -z "$model_id" ] && continue
+    extra_count=$((extra_count + 1))
+
+    if ! validate_model_id "$model_id"; then
+      doctor_emit fail "EXTRA_MODEL_IDS 包含非法模型 ID: ${model_id}"
+      invalid_extra_count=$((invalid_extra_count + 1))
+      continue
+    fi
+
+    local extra_base extra_key extra_model extra_name
+    local extra_base_key extra_key_key extra_model_key extra_name_key
+    extra_base_key="MODEL_${model_id}_BASE_URL"
+    extra_key_key="MODEL_${model_id}_API_KEY"
+    extra_model_key="MODEL_${model_id}_MODEL"
+    extra_name_key="MODEL_${model_id}_NAME"
+
+    extra_base="$(get_env_value "$extra_base_key")"
+    extra_key="$(get_env_value "$extra_key_key")"
+    extra_model="$(get_env_value "$extra_model_key")"
+    extra_name="$(get_env_value "$extra_name_key")"
+
+    if [ -z "$extra_base" ] || [ -z "$extra_key" ] || [ -z "$extra_model" ]; then
+      doctor_emit fail "模型 ${model_id} 配置不完整（需要 ${extra_base_key} / ${extra_key_key} / ${extra_model_key}）"
+      continue
+    fi
+
+    if ! validate_base_url "$extra_base"; then
+      doctor_emit fail "${extra_base_key} 格式错误"
+    else
+      doctor_emit ok "${extra_base_key} 格式正确"
+    fi
+
+    if ! validate_api_key "$extra_key"; then
+      doctor_emit fail "${extra_key_key} 格式错误"
+    else
+      doctor_emit ok "${extra_key_key} 格式正确"
+    fi
+
+    if ! validate_model "$extra_model"; then
+      doctor_emit fail "${extra_model_key} 格式错误: ${extra_model}"
+    else
+      doctor_emit ok "${extra_model_key} 格式正确: ${extra_model}"
+    fi
+
+    if [ -z "$extra_name" ]; then
+      doctor_emit warn "${extra_name_key} 未设置（可选，仅用于显示）"
+    elif printf '%s' "$extra_name" | grep -q '[[:space:]]'; then
+      doctor_emit warn "${extra_name_key} 含空格，建议改为无空格或加双引号以避免 dotenv 解析问题"
+    else
+      doctor_emit ok "${extra_name_key} 已设置"
+    fi
+  done < <(parse_extra_model_ids)
+
+  if [ -n "$raw_extra_ids" ] && [ "$extra_count" -eq 0 ]; then
+    doctor_emit fail "EXTRA_MODEL_IDS 已配置但未解析出有效条目，请检查逗号分隔格式。"
+  fi
+
+  if [ "$extra_count" -gt 0 ] && [ "$invalid_extra_count" -eq 0 ]; then
+    doctor_emit ok "额外模型 ID 解析完成，共 ${extra_count} 个"
+  fi
+
+  bad_space_lines="$(awk '
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    index($0, "=") == 0 { next }
+    {
+      line=$0
+      sub(/^[[:space:]]+/, "", line)
+      key=line
+      sub(/=.*/, "", key)
+      val=line
+      sub(/^[^=]*=/, "", val)
+      gsub(/^[[:space:]]+/, "", val)
+      gsub(/[[:space:]]+$/, "", val)
+      if (val ~ /[[:space:]]/) {
+        first=substr(val, 1, 1)
+        last=substr(val, length(val), 1)
+        if (!((first == "\"" && last == "\"") || (first == "\047" && last == "\047"))) {
+          printf "  - 行 %d: %s=%s\n", NR, key, val
+        }
+      }
+    }
+  ' "$ENV_FILE")"
+
+  if [ -n "$bad_space_lines" ]; then
+    doctor_emit fail ".env 检测到未加引号且包含空格的值，可能导致 dotenv 解析中断。"
+    echo "$bad_space_lines"
+    echo "  对策: 改为无空格（如 DefaultModel），或使用双引号包裹（如 \"Default Model\"）。"
+  else
+    doctor_emit ok ".env 未发现明显的空格解析风险行"
+  fi
+
+  port_checked="$(resolve_port)"
+  if validate_port "$port_checked"; then
+    doctor_emit ok "PORT 有效: ${port_checked}"
+  else
+    doctor_emit fail "PORT 格式错误: ${port_checked}（应为 1-65535）"
+    port_checked="3000"
+  fi
+
+  listening_pids=""
+  proxy_pids=""
+  if command -v lsof >/dev/null 2>&1; then
+    local pid cmd
+    while IFS= read -r pid; do
+      [ -z "$pid" ] && continue
+      cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+      if is_proxy_cmd "$cmd"; then
+        if [ -n "$proxy_pids" ]; then
+          proxy_pids="$proxy_pids $pid"
+        else
+          proxy_pids="$pid"
+        fi
+      fi
+      if [ -n "$listening_pids" ]; then
+        listening_pids="$listening_pids $pid"
+      else
+        listening_pids="$pid"
+      fi
+    done < <(lsof -tiTCP:"$port_checked" -sTCP:LISTEN 2>/dev/null || true)
+  fi
+
+  if is_healthy "$port_checked"; then
+    doctor_emit ok "健康检查通过: http://127.0.0.1:${port_checked}/health"
+  else
+    if [ -n "$proxy_pids" ]; then
+      doctor_emit warn "检测到代理进程 PID=${proxy_pids}，但健康检查失败（可执行 xcodeaiproxy logs 排查）"
+    elif [ -n "$listening_pids" ]; then
+      doctor_emit warn "端口 ${port_checked} 被其他进程占用（PID=${listening_pids}）"
+    else
+      doctor_emit warn "服务当前未运行（如需启动执行 xcodeaiproxy start）"
+    fi
+  fi
+
+  echo
+  echo "=== doctor 汇总 ==="
+  echo "PASS: $pass_count"
+  echo "WARN: $warn_count"
+  echo "FAIL: $fail_count"
+
+  if [ "$fail_count" -gt 0 ]; then
+    return 1
+  fi
+  return 0
 }
 
 find_binary() {
@@ -818,6 +1049,9 @@ case "$COMMAND" in
     ;;
   use-model)
     use_model_cmd "${1:-}"
+    ;;
+  doctor)
+    doctor_cmd "$@"
     ;;
   help|-h|--help)
     usage
