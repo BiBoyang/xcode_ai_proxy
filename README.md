@@ -78,6 +78,8 @@ export PATH="$HOME/.local/bin:$PATH"
 - `xcodeaiproxy-stop` 或 `xcodeaiproxy stop`：一键停止服务
 - `xcodeaiproxy restart`：重启服务（改配置后常用）
 - `xcodeaiproxy status`：查看运行状态详情（端口、健康检查、PID、日志路径）
+- `xcodeaiproxy models`：查看当前默认模型与可切换模型列表
+- `xcodeaiproxy use-model <模型ID>`：切换默认模型来源（写入 `OPENAI_*`）
 - `xcodeaiproxy logs`：实时查看日志（排错用）
 - `xcodeaiproxy run`：前台运行（调试用，会占用当前终端）
 - `xcodeaiproxy setup`：交互式写入/更新 `.env`
@@ -154,6 +156,8 @@ MODEL_ModelB_PROVIDER=moonshot
 
 - `EXTRA_MODEL_IDS` 中的 id 仅支持字母/数字/下划线，且不能以数字开头
 - 每个模型必须同时配置 `BASE_URL`、`API_KEY`、`MODEL`
+- 查看模型：`xcodeaiproxy models`
+- 切换默认模型：`xcodeaiproxy use-model ModelA`
 - 改完 `.env` 后执行 `xcodeaiproxy restart`
 - 模型列表可通过 `GET /v1/models` 查看，客户端可按模型 id 手动切换
 

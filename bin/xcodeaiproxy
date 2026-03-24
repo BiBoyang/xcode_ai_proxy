@@ -32,7 +32,7 @@ LOG_FILE="$HOME/.xcodeaiproxy.log"
 usage() {
   cat <<'EOF'
 用法:
-  xcodeaiproxy [start|stop|restart|status|logs|setup|run]
+  xcodeaiproxy [start|stop|restart|status|logs|setup|run|models|use-model]
 
 说明:
   start    后台启动（默认）
@@ -42,6 +42,8 @@ usage() {
   logs     查看日志（实时）
   setup    交互式写入 .env
   run      前台运行（占用当前终端）
+  models   查看模型列表与当前默认模型
+  use-model <模型ID>  切换默认模型来源（写入 OPENAI_*）
 EOF
 }
 
@@ -195,6 +197,189 @@ is_healthy() {
 is_proxy_cmd() {
   local cmd="$1"
   [[ "$cmd" == *"xcode-ai-proxy-rust"* ]] || [[ "$cmd" == *"cargo run"* ]]
+}
+
+resolve_default_model_id() {
+  local default_id
+  default_id="$(get_env_value DEFAULT_MODEL_ID)"
+  if [ -z "$default_id" ] || ! validate_model_id "$default_id"; then
+    default_id="DefaultModel"
+  fi
+  echo "$default_id"
+}
+
+parse_extra_model_ids() {
+  local raw
+  raw="$(get_env_value EXTRA_MODEL_IDS)"
+  [ -n "$raw" ] || return 0
+
+  printf '%s\n' "$raw" | awk -F',' '
+    {
+      for (i = 1; i <= NF; i++) {
+        item=$i
+        gsub(/^[[:space:]]+/, "", item)
+        gsub(/[[:space:]]+$/, "", item)
+        if (item != "") {
+          print item
+        }
+      }
+    }
+  '
+}
+
+extra_model_exists() {
+  local target="$1"
+  local id
+  while IFS= read -r id; do
+    [ "$id" = "$target" ] && return 0
+  done < <(parse_extra_model_ids)
+  return 1
+}
+
+show_models_cmd() {
+  ensure_project
+  ensure_env_file
+
+  local default_id default_name current_base current_key current_model
+  default_id="$(resolve_default_model_id)"
+  default_name="$(get_env_value DEFAULT_MODEL_NAME)"
+  [ -z "$default_name" ] && default_name="Default Model"
+  current_base="$(get_env_value OPENAI_BASE_URL)"
+  current_key="$(get_env_value OPENAI_API_KEY)"
+  current_model="$(get_env_value OPENAI_MODEL)"
+
+  echo "=== 当前默认模型（Xcode 默认走这个） ==="
+  echo "ID: $default_id"
+  echo "Name: $default_name"
+  if [ -n "$current_model" ]; then
+    echo "Model: $current_model"
+  else
+    echo "Model: （未设置）"
+  fi
+  if [ -n "$current_base" ]; then
+    echo "Base URL: $current_base"
+  else
+    echo "Base URL: （未设置）"
+  fi
+  if [ -n "$current_key" ]; then
+    echo "API Key: 已设置（已隐藏）"
+  else
+    echo "API Key: 未设置"
+  fi
+
+  echo
+  echo "=== 可切换模型（来自 EXTRA_MODEL_IDS） ==="
+  local id count
+  count=0
+  while IFS= read -r id; do
+    [ -z "$id" ] && continue
+    count=$((count + 1))
+
+    local base_key api_key_key model_key name_key
+    local base api_key model name active
+    base_key="MODEL_${id}_BASE_URL"
+    api_key_key="MODEL_${id}_API_KEY"
+    model_key="MODEL_${id}_MODEL"
+    name_key="MODEL_${id}_NAME"
+
+    base="$(get_env_value "$base_key")"
+    api_key="$(get_env_value "$api_key_key")"
+    model="$(get_env_value "$model_key")"
+    name="$(get_env_value "$name_key")"
+    [ -z "$name" ] && name="$id"
+
+    if [ -z "$base" ] || [ -z "$api_key" ] || [ -z "$model" ]; then
+      echo "- $id: ❌ 配置不完整（需要 $base_key / $api_key_key / $model_key）"
+      continue
+    fi
+
+    active=""
+    if [ "$base" = "$current_base" ] && [ "$api_key" = "$current_key" ] && [ "$model" = "$current_model" ]; then
+      active="（当前已启用）"
+    fi
+    echo "- $id: $name -> $model @ $base $active"
+  done < <(parse_extra_model_ids)
+
+  if [ "$count" -eq 0 ]; then
+    echo "（未配置）可在 .env 添加 EXTRA_MODEL_IDS=ModelA,ModelB"
+  fi
+}
+
+use_model_cmd() {
+  ensure_project
+  ensure_env_file
+
+  local target_id="$1"
+  if [ -z "$target_id" ]; then
+    echo "用法: xcodeaiproxy use-model <模型ID>"
+    exit 1
+  fi
+
+  if ! validate_model_id "$target_id"; then
+    echo "❌ 模型 ID 格式不正确: $target_id"
+    echo "对策: 仅支持字母、数字、下划线，且不能以数字开头。"
+    exit 1
+  fi
+
+  if ! extra_model_exists "$target_id"; then
+    local default_id
+    default_id="$(resolve_default_model_id)"
+    if [ "$target_id" = "$default_id" ]; then
+      echo "ℹ️ 当前默认模型 ID 就是: $default_id"
+      exit 0
+    fi
+    echo "❌ 未在 EXTRA_MODEL_IDS 中找到模型: $target_id"
+    echo "请先执行: xcodeaiproxy models 查看可用模型。"
+    exit 1
+  fi
+
+  local base_key api_key_key model_key name_key
+  local base api_key model name
+  base_key="MODEL_${target_id}_BASE_URL"
+  api_key_key="MODEL_${target_id}_API_KEY"
+  model_key="MODEL_${target_id}_MODEL"
+  name_key="MODEL_${target_id}_NAME"
+
+  base="$(get_env_value "$base_key")"
+  api_key="$(get_env_value "$api_key_key")"
+  model="$(get_env_value "$model_key")"
+  name="$(get_env_value "$name_key")"
+
+  if [ -z "$base" ] || [ -z "$api_key" ] || [ -z "$model" ]; then
+    echo "❌ 模型 $target_id 配置不完整。"
+    echo "请补全: $base_key / $api_key_key / $model_key"
+    exit 1
+  fi
+
+  if ! validate_base_url "$base"; then
+    echo "❌ $base_key 格式不正确: $base"
+    exit 1
+  fi
+  if ! validate_api_key "$api_key"; then
+    echo "❌ $api_key_key 格式不正确。"
+    exit 1
+  fi
+  if ! validate_model "$model"; then
+    echo "❌ $model_key 格式不正确: $model"
+    exit 1
+  fi
+
+  upsert_env_value OPENAI_BASE_URL "$base"
+  upsert_env_value OPENAI_API_KEY "$api_key"
+  upsert_env_value OPENAI_MODEL "$model"
+  if [ -n "$name" ]; then
+    upsert_env_value DEFAULT_MODEL_NAME "$name"
+  fi
+
+  echo "✅ 已切换默认模型来源到: $target_id"
+  echo "   OPENAI_MODEL=$model"
+  echo "   OPENAI_BASE_URL=$base"
+
+  local port
+  port="$(resolve_port)"
+  if is_healthy "$port"; then
+    echo "ℹ️ 服务正在运行，建议执行: xcodeaiproxy restart"
+  fi
 }
 
 find_binary() {
@@ -629,6 +814,12 @@ case "$COMMAND" in
     ;;
   run)
     run_cmd "$@"
+    ;;
+  models)
+    show_models_cmd "$@"
+    ;;
+  use-model)
+    use_model_cmd "${1:-}"
     ;;
   help|-h|--help)
     usage
