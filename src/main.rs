@@ -562,3 +562,350 @@ fn error_response(status: StatusCode, message: String, error_type: &str) -> Resp
     )
         .into_response()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use std::sync::{Mutex, OnceLock};
+
+    const CONFIG_ENV_KEYS: &[&str] = &[
+        "HOST",
+        "PORT",
+        "MAX_RETRIES",
+        "RETRY_DELAY",
+        "REQUEST_TIMEOUT",
+        "OPENAI_COMPAT_API_URL",
+        "OPENAI_COMPAT_API_KEY",
+        "OPENAI_COMPAT_MODELS",
+        "OPENAI_COMPAT_NAME_PREFIX",
+        "OPENAI_COMPAT_PROVIDER_NAME",
+        "OPENAI_BASE_URL",
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL",
+        "UNIT_TEST_ENV",
+        "UNIT_TEST_CSV",
+    ];
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_lock() -> &'static Mutex<()> {
+        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvScope {
+        snapshot: Vec<(String, Option<String>)>,
+    }
+
+    impl EnvScope {
+        fn new(keys: &[&str]) -> Self {
+            let snapshot = keys
+                .iter()
+                .map(|key| ((*key).to_string(), env::var(key).ok()))
+                .collect::<Vec<_>>();
+            for key in keys {
+                // SAFETY: Tests are serialized through ENV_LOCK, so mutating process env is synchronized.
+                unsafe { env::remove_var(key) };
+            }
+            Self { snapshot }
+        }
+
+        fn set(&self, key: &str, value: &str) {
+            // SAFETY: Tests are serialized through ENV_LOCK, so mutating process env is synchronized.
+            unsafe { env::set_var(key, value) };
+        }
+
+        fn remove(&self, key: &str) {
+            // SAFETY: Tests are serialized through ENV_LOCK, so mutating process env is synchronized.
+            unsafe { env::remove_var(key) };
+        }
+    }
+
+    impl Drop for EnvScope {
+        fn drop(&mut self) {
+            for (key, value) in &self.snapshot {
+                match value {
+                    Some(v) => {
+                        // SAFETY: Tests are serialized through ENV_LOCK, so mutating process env is synchronized.
+                        unsafe { env::set_var(key, v) };
+                    }
+                    None => {
+                        // SAFETY: Tests are serialized through ENV_LOCK, so mutating process env is synchronized.
+                        unsafe { env::remove_var(key) };
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn env_non_empty_trims_and_filters_blank() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        let env_scope = EnvScope::new(&["UNIT_TEST_ENV"]);
+
+        env_scope.set("UNIT_TEST_ENV", "   ");
+        assert_eq!(env_non_empty("UNIT_TEST_ENV"), None);
+
+        env_scope.set("UNIT_TEST_ENV", "  value  ");
+        assert_eq!(env_non_empty("UNIT_TEST_ENV"), Some("value".to_string()));
+
+        env_scope.remove("UNIT_TEST_ENV");
+        assert_eq!(env_non_empty("UNIT_TEST_ENV"), None);
+    }
+
+    #[test]
+    fn parse_csv_env_trims_and_ignores_empty_items() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        let env_scope = EnvScope::new(&["UNIT_TEST_CSV"]);
+        env_scope.set("UNIT_TEST_CSV", " model-a, ,model-b ,, model-c ");
+
+        let parsed = parse_csv_env("UNIT_TEST_CSV");
+        assert_eq!(
+            parsed,
+            vec![
+                "model-a".to_string(),
+                "model-b".to_string(),
+                "model-c".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn normalize_api_url_handles_trailing_slash_and_chat_suffix() {
+        assert_eq!(
+            normalize_api_url("https://api.example.com/v1/"),
+            "https://api.example.com/v1"
+        );
+        assert_eq!(
+            normalize_api_url("https://api.example.com/v1/chat/completions"),
+            "https://api.example.com/v1"
+        );
+        assert_eq!(
+            normalize_api_url("https://api.example.com/v1/chat/completions/"),
+            "https://api.example.com/v1"
+        );
+    }
+
+    #[test]
+    fn validate_chat_completion_request_rejects_non_object() {
+        let result = validate_chat_completion_request(&json!("bad"));
+        match result {
+            Err(AppError::InvalidRequest(message)) => assert_eq!(message, "Invalid request body"),
+            other => panic!("expected InvalidRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_chat_completion_request_requires_model_and_messages() {
+        let missing_model = validate_chat_completion_request(&json!({
+            "messages": [{"role": "user", "content": "hi"}]
+        }));
+        match missing_model {
+            Err(AppError::InvalidRequest(message)) => {
+                assert_eq!(message, "Missing required field: 'model'")
+            }
+            other => panic!("expected InvalidRequest for missing model, got {other:?}"),
+        }
+
+        let missing_messages = validate_chat_completion_request(&json!({
+            "model": "gpt-4.1-mini"
+        }));
+        match missing_messages {
+            Err(AppError::InvalidRequest(message)) => {
+                assert_eq!(message, "Missing required field: 'messages'")
+            }
+            other => panic!("expected InvalidRequest for missing messages, got {other:?}"),
+        }
+
+        let ok = validate_chat_completion_request(&json!({
+            "model": "gpt-4.1-mini",
+            "messages": [{"role": "user", "content": "hello"}]
+        }));
+        assert!(ok.is_ok());
+    }
+
+    #[test]
+    fn with_model_override_replaces_model_and_keeps_other_fields() {
+        let original = json!({
+            "model": "local-model",
+            "stream": true,
+            "messages": [{"role": "user", "content": "hello"}]
+        });
+
+        let overridden = with_model_override(&original, "upstream-model")
+            .expect("model override should succeed");
+
+        assert_eq!(overridden["model"], "upstream-model");
+        assert_eq!(overridden["stream"], true);
+        assert_eq!(overridden["messages"], original["messages"]);
+
+        // The source body should remain unchanged.
+        assert_eq!(original["model"], "local-model");
+    }
+
+    #[test]
+    fn with_model_override_rejects_non_object_body() {
+        let result = with_model_override(&json!("invalid"), "upstream-model");
+        match result {
+            Err(AppError::InvalidRequest(message)) => assert_eq!(message, "Invalid request body"),
+            other => panic!("expected InvalidRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn add_model_config_keeps_first_on_id_conflict() {
+        let mut models = HashMap::new();
+
+        add_model_config(
+            &mut models,
+            "model-a",
+            ModelConfig {
+                api_url: "https://first.example.com/v1".to_string(),
+                api_key: "first-key".to_string(),
+                model_type: "openai_compat".to_string(),
+                name: "first".to_string(),
+                upstream_model: Some("model-a".to_string()),
+                provider: Some("provider-a".to_string()),
+            },
+        );
+
+        add_model_config(
+            &mut models,
+            "model-a",
+            ModelConfig {
+                api_url: "https://second.example.com/v1".to_string(),
+                api_key: "second-key".to_string(),
+                model_type: "openai_compat".to_string(),
+                name: "second".to_string(),
+                upstream_model: Some("model-a".to_string()),
+                provider: Some("provider-b".to_string()),
+            },
+        );
+
+        let saved = models.get("model-a").expect("model-a should exist");
+        assert_eq!(saved.api_url, "https://first.example.com/v1");
+        assert_eq!(saved.api_key, "first-key");
+        assert_eq!(saved.name, "first");
+    }
+
+    #[test]
+    fn load_config_builds_models_from_legacy_openai_env() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        let env_scope = EnvScope::new(CONFIG_ENV_KEYS);
+
+        env_scope.set("OPENAI_BASE_URL", "https://api.example.com/v1/");
+        env_scope.set("OPENAI_API_KEY", "sk-legacy-key");
+        env_scope.set("OPENAI_MODEL", "model-a, model-b");
+
+        let config = load_config().expect("load_config should succeed");
+        assert_eq!(config.host, "0.0.0.0");
+        assert_eq!(config.port, 3000);
+        assert_eq!(config.max_retries, 3);
+        assert_eq!(config.retry_delay_ms, 1000);
+        assert_eq!(config.request_timeout_ms, 60_000);
+        assert_eq!(config.api_configs.len(), 2);
+
+        let model_a = config
+            .api_configs
+            .get("model-a")
+            .expect("model-a should be configured");
+        assert_eq!(model_a.api_url, "https://api.example.com/v1");
+        assert_eq!(model_a.api_key, "sk-legacy-key");
+        assert_eq!(model_a.provider.as_deref(), Some("openai_compat"));
+        assert_eq!(model_a.upstream_model.as_deref(), Some("model-a"));
+        assert_eq!(model_a.name, "OpenAI-Compatible model-a");
+    }
+
+    #[test]
+    fn load_config_supports_custom_prefix_and_provider() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        let env_scope = EnvScope::new(CONFIG_ENV_KEYS);
+
+        env_scope.set(
+            "OPENAI_COMPAT_API_URL",
+            "https://proxy.example.com/v1/chat/completions/",
+        );
+        env_scope.set("OPENAI_COMPAT_API_KEY", "sk-compat-key");
+        env_scope.set("OPENAI_COMPAT_MODELS", "kimi-2.5");
+        env_scope.set("OPENAI_COMPAT_NAME_PREFIX", "My Proxy");
+        env_scope.set("OPENAI_COMPAT_PROVIDER_NAME", "my_provider");
+
+        let config = load_config().expect("load_config should succeed");
+        let model = config
+            .api_configs
+            .get("kimi-2.5")
+            .expect("kimi-2.5 should be configured");
+
+        assert_eq!(model.api_url, "https://proxy.example.com/v1");
+        assert_eq!(model.name, "My Proxy kimi-2.5");
+        assert_eq!(model.provider.as_deref(), Some("my_provider"));
+        assert_eq!(model.upstream_model.as_deref(), Some("kimi-2.5"));
+    }
+
+    #[test]
+    fn load_config_errors_when_missing_required_model_config() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        let _env_scope = EnvScope::new(CONFIG_ENV_KEYS);
+
+        let error = load_config().expect_err("load_config should fail without model config");
+        assert!(
+            error.contains("未配置任何模型"),
+            "unexpected error message: {error}"
+        );
+    }
+
+    #[test]
+    fn load_config_errors_on_invalid_port() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        let env_scope = EnvScope::new(CONFIG_ENV_KEYS);
+        env_scope.set("OPENAI_BASE_URL", "https://api.example.com/v1");
+        env_scope.set("OPENAI_API_KEY", "sk-legacy-key");
+        env_scope.set("OPENAI_MODEL", "model-a");
+        env_scope.set("PORT", "not-a-port");
+
+        let error = load_config().expect_err("load_config should fail for invalid port");
+        assert!(
+            error.contains("环境变量 PORT 不是有效端口"),
+            "unexpected error message: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn error_response_has_expected_shape() {
+        let response = error_response(
+            StatusCode::BAD_REQUEST,
+            "bad request".to_string(),
+            "invalid_request_error",
+        );
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should be readable");
+        let value: Value = serde_json::from_slice(&body).expect("body should be valid json");
+
+        assert_eq!(value["detail"]["error"]["message"], "bad request");
+        assert_eq!(value["detail"]["error"]["type"], "invalid_request_error");
+    }
+
+    #[tokio::test]
+    async fn app_error_upstream_api_maps_status_and_type() {
+        let response = AppError::UpstreamApi(StatusCode::BAD_GATEWAY, "gateway failure".to_string())
+            .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should be readable");
+        let value: Value = serde_json::from_slice(&body).expect("body should be valid json");
+
+        assert_eq!(value["detail"]["error"]["type"], "api_error");
+        let message = value["detail"]["error"]["message"]
+            .as_str()
+            .expect("message should be string");
+        assert!(
+            message.contains("API 请求失败: 502 - gateway failure"),
+            "unexpected message: {message}"
+        );
+    }
+}
