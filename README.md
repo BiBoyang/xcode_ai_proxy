@@ -103,6 +103,19 @@ PORT=3020 xcodeaiproxy-stop
 
 - Base URL: `http://localhost:3000`（如改端口请同步修改）
 - API Key: `any-string-works`（任意字符串）
+- Model（本地模型名）: `DefaultModel`（推荐）
+
+说明：
+
+- `DefaultModel` 是默认模型 id，`setup` 会写入 `DEFAULT_MODEL_ID=DefaultModel`
+- 如果你想固定用某个追加模型，也可以在 Xcode 里直接填 `ModelA` / `ModelB`
+- 如果你不想每次改 Xcode，建议一直填 `DefaultModel`，然后在终端切换：
+
+```bash
+xcodeaiproxy models
+xcodeaiproxy use-model ModelA
+xcodeaiproxy restart
+```
 
 ## MCP 与 Skills
 
