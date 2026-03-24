@@ -541,6 +541,11 @@ async fn handle_proxy(
         .as_deref()
         .unwrap_or(&model)
         .to_string();
+    let provider_name = config.provider.as_deref().unwrap_or(&config.model_type);
+    info!(
+        "🧭 模型路由: 请求模型={} -> 上游模型={} | provider={} | api_url={} | stream={}",
+        model, upstream_model, provider_name, config.api_url, stream
+    );
     let upstream_body = with_model_override(&request_body, &upstream_model)?;
 
     forward_with_retry(state, config, upstream_body, stream).await
