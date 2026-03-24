@@ -125,6 +125,12 @@ xcodeaiproxy restart
 - 推荐用法 1：在 Xcode 中继续使用本代理完成日常对话与代码辅助
 - 推荐用法 2：需要 MCP / Skills 时，在终端使用支持这些能力的 Agent 工具处理同一项目
 
+### TODO（后续计划）
+
+- [ ] 支持 MCP：增加 MCP client（`initialize` / `list_tools` / `call_tool`），并在代理转发链路中接入工具调用。
+- [ ] 支持 Skills：增加 skill 配置（系统提示词 + 工具白名单），支持按请求启用不同 skill。
+- [ ] 补充文档与测试：提供最小可运行示例（1 个 MCP server + 1 个 skill），并覆盖成功/失败场景。
+
 ## 配置说明
 
 - 推荐使用 `xcodeaiproxy setup` 进行交互式配置（会写入项目根目录 `.env`）
