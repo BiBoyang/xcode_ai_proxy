@@ -154,14 +154,14 @@ EXTRA_MODEL_IDS=ModelA,ModelB
 MODEL_ModelA_BASE_URL=https://api.openai.com/v1
 MODEL_ModelA_API_KEY=sk-openai-xxxx
 MODEL_ModelA_MODEL=gpt-4.1-mini
-MODEL_ModelA_NAME=OpenAI GPT-4.1 mini
+MODEL_ModelA_NAME=OpenAI_GPT_4_1_mini
 MODEL_ModelA_PROVIDER=openai
 
 # ModelB
 MODEL_ModelB_BASE_URL=https://api.moonshot.cn/v1
 MODEL_ModelB_API_KEY=sk-kimi-xxxx
 MODEL_ModelB_MODEL=kimi-k2-0711-preview
-MODEL_ModelB_NAME=Kimi K2
+MODEL_ModelB_NAME=Kimi_K2
 MODEL_ModelB_PROVIDER=moonshot
 ```
 

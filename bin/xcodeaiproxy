@@ -367,9 +367,7 @@ use_model_cmd() {
   upsert_env_value OPENAI_BASE_URL "$base"
   upsert_env_value OPENAI_API_KEY "$api_key"
   upsert_env_value OPENAI_MODEL "$model"
-  if [ -n "$name" ]; then
-    upsert_env_value DEFAULT_MODEL_NAME "$name"
-  fi
+  upsert_env_value DEFAULT_MODEL_NAME "$target_id"
 
   echo "✅ 已切换默认模型来源到: $target_id"
   echo "   OPENAI_MODEL=$model"
